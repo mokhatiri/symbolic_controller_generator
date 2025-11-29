@@ -1,0 +1,1196 @@
+\documentclass[12pt,a4paper]{report}
+
+% ---------- Packages ----------
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{geometry}
+\geometry{margin=2.5cm}
+\usepackage{setspace}
+\onehalfspacing
+
+\usepackage{graphicx}
+\usepackage{amsmath, amssymb}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{enumitem}
+
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{fancyhdr} % <-- added
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=black,
+    urlcolor=blue,
+    citecolor=black
+}
+
+% ---------- Header style ----------
+\pagestyle{fancy}
+\fancyhf{} % clear default header/footer
+\fancyhead[L]{\nouppercase{\leftmark}} % chapter name on the left
+\fancyhead[R]{UM6P - College Of Computing} % fixed text on the right
+\renewcommand{\headrulewidth}{0.4pt}
+\fancyfoot[C]{\thepage}
+
+% Ensure chapter-opening pages use the same header/footer style
+\fancypagestyle{plain}{%
+  \fancyhf{}
+  \fancyhead[L]{\nouppercase{\leftmark}}
+  \fancyhead[R]{UM6P - College Of Computing}
+  \renewcommand{\headrulewidth}{0.4pt}
+  \fancyfoot[C]{\thepage}
+}
+
+% ---------- Python code style ----------
+\lstdefinestyle{pythonstyle}{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue!70!black}\bfseries,
+    commentstyle=\color{green!40!black}\itshape,
+    stringstyle=\color{red!60!black},
+    numberstyle=\tiny\color{gray},
+    numbers=left,
+    stepnumber=1,
+    numbersep=5pt,
+    frame=single,
+    rulecolor=\color{black!40},
+    breaklines=true,
+    tabsize=2,
+    showstringspaces=false,
+    captionpos=b,
+    xleftmargin=1.5em,
+    framexleftmargin=1.5em
+}
+
+% ---------- Title ----------
+\title{Symbolic Abstraction and Controller Synthesis\\[4pt]
+for Nonlinear Systems}
+\author{
+    Mohammed Khatiri \and
+    Abderrahim Oussayh \and
+    Walid Mamze \and
+    Ayoub Moussaif
+}
+
+\begin{document}
+
+% ---------- Cover Page ----------
+\maketitle
+
+\pagenumbering{roman}
+
+% ---------- Abstract ----------
+\begin{abstract}
+This report presents the design and implementation of a symbolic control framework
+for a nonlinear sampled--data system subject to bounded disturbances. Starting
+from a continuous model of a mobile--robot--like system with three state variables
+and two control inputs, we construct a finite--state symbolic abstraction by
+discretising the state and input spaces and computing conservative one--step
+reachable sets via a Jacobian--based interval method. The resulting transition
+system serves as a finite model on which standard algorithms from formal methods
+can be applied.
+
+On top of this abstraction, we formulate fixed--point algorithms for three classes
+of specifications: pure safety (invariance of a safe region), reachability
+(eventually reaching a target while staying safe), and a temporal scenario of the
+form ``visit $R_1$ or $R_2$, then $R_3$, while always avoiding $R_4$''. In our
+Python implementation, we focus on the automata--based scenario, while safety and
+reachability naturally appear as special cases of the same framework.
+
+The software architecture separates continuous dynamics, discretisation, symbolic
+abstraction, labelling and automaton specification, and a prototype
+automata--based controller. Numerical examples based on the constructed transition
+system illustrate the structure of the abstraction and of the fixed--point
+iterations, and highlight the trade--offs between grid resolution, computational
+complexity and robustness. The resulting framework is reusable for other nonlinear
+systems of similar structure.
+\end{abstract}
+
+% ---------- Table of Contents ----------
+\tableofcontents
+\clearpage
+
+\pagenumbering{arabic}
+
+% ==================================================
+% 1. INTRODUCTION
+% ==================================================
+\chapter{Introduction}
+
+\section{Project Context}
+
+Modern cyber--physical systems such as autonomous robots, vehicles, and industrial
+processes are typically described by nonlinear differential or difference equations.
+Their evolution depends on continuous variables (positions, velocities, angles),
+discrete control decisions (actuator commands), and often unknown but bounded
+disturbances. Classical control techniques focus on stability and performance, but
+they usually do not provide \emph{formal guarantees} with respect to rich
+logical specifications such as
+``eventually reach a given region while always avoiding obstacles''.
+
+Symbolic control aims at closing this gap by combining control theory with
+formal methods. The key idea is to approximate the original continuous system
+by a \emph{finite} symbolic model on which algorithms from automata theory and
+model checking can be applied. The continuous dynamics
+\begin{equation}
+  x^{+} = f(x, u, w)
+  \label{eq:nonlinear_system}
+\end{equation}
+are replaced by a transition system whose states are cells of a grid in the
+state space and whose transitions summarise all possible successors of each
+cell under a given control input.
+
+This project fits into the general framework of hybrid systems and formal
+verification. It follows the abstraction--based control design approach:
+\begin{itemize}
+  \item start from a continuous nonlinear model,
+  \item construct a conservative symbolic abstraction,
+  \item synthesise controllers on the abstract model,
+  \item and interpret them back on the original system.
+\end{itemize}
+Our implementation is targeted at a nonlinear mobile--robot--like system with
+three continuous state variables and two control inputs, but the abstraction
+framework is generic and can be reused for other systems of similar structure.
+
+\section{Motivation}
+
+There are several motivations for using symbolic control in this context:
+
+\begin{itemize}
+  \item \textbf{Safety in the presence of uncertainty.}
+  The system is subject to bounded disturbances and modelling errors. Numerical
+  simulations can illustrate typical behaviours but cannot exhaustively cover
+  all possible trajectories. Symbolic models, built as conservative
+  over--approximations of the reachable sets, enable formal safety guarantees
+  ``for all admissible disturbances''.
+
+  \item \textbf{Complex temporal specifications.}
+  Specifications such as ``visit region $R_1$ or $R_2$, then region $R_3$,
+  while always avoiding $R_4$'' combine safety, reachability and ordering
+  constraints. They are naturally expressed using automata or temporal logics
+  and can be enforced by controllers synthesised on the symbolic abstraction.
+
+  \item \textbf{Bridging continuous dynamics and formal methods.}
+  Tools from formal verification usually operate on finite--state transition
+  systems, whereas control engineers work with continuous models. Discretisation
+  and abstraction act as an interface between these worlds, allowing us to reuse
+  well--established algorithms from both communities.
+
+  \item \textbf{Reusability and automation.}
+  Once a generic abstraction engine is available, only the system dynamics
+  $f$, the bounds $(X, U, W)$, and the desired specifications need to be
+  adapted. The rest of the pipeline (grid construction, reachable set
+  computation, transition enumeration) is automated.
+\end{itemize}
+
+\section{Objectives of the Project}
+
+The project assignment specifies the following objectives:
+
+\begin{itemize}
+  \item \textbf{Build the symbolic abstraction (transition system).}
+  Starting from the continuous model \eqref{eq:nonlinear_system}, construct
+  a finite transition system. The continuous state space $X$ and control space
+  $U$ are discretised, and for each state--control pair we compute a
+  conservative interval of successor states using a Jacobian--based interval
+  method.
+
+  \item \textbf{Synthesis of controllers on the abstraction.}
+  Use fixed--point algorithms on the symbolic model to enforce safety and
+  reachability properties, and to handle a temporal scenario encoded as a
+  finite automaton.
+
+  \item \textbf{Temporal scenario ``$R_1$ or $R_2$ then $R_3$ while avoiding
+  $R_4$''.}
+  Encode this requirement as a deterministic automaton over atomic
+  propositions corresponding to regions $R_1, R_2, R_3, R_4$, form the product
+  with the transition system, and synthesise a controller that satisfies the
+  specification.
+
+  \item \textbf{Numerical evaluation and inspection.}
+  Compute the abstraction for a representative grid, inspect its structure,
+  and illustrate the behaviour of the resulting fixed--point iterations on
+  selected initial conditions.
+\end{itemize}
+
+In this report we fully implement the abstraction engine and provide a
+prototype implementation of automata--based controller synthesis. Safety and
+reachability controllers are obtained conceptually as special cases of the
+same fixed--point framework.
+
+\section{Contributions of This Report}
+
+This report documents the complete symbolic control pipeline implemented in
+Python. The main contributions are:
+
+\begin{itemize}
+  \item \textbf{Methodology.}
+  We present a clear, step--by--step methodology for going from a nonlinear
+  continuous model to a finite symbolic abstraction and, finally, to certified
+  controllers at the symbolic level. The methodology follows the
+  abstraction--based design pattern: modelling, discretisation, reachable set
+  computation, controller synthesis, and validation.
+
+  \item \textbf{Implementation of a reusable abstraction engine.}
+  We provide a modular implementation comprising:
+  \begin{itemize}
+    \item a \texttt{System} class for the nonlinear dynamics and their
+    Jacobians,
+    \item an \texttt{Abstract} discretisation class that builds
+    the state and control grids and index mappings,
+    \item a \texttt{SymbolicAbstraction} class that computes and stores the
+    transition tensor $T[x, u]$.
+  \end{itemize}
+  These components are generic and can be reused with other systems.
+
+  \item \textbf{Fixed--point controller synthesis.}
+  On top of the abstraction, we implement a generic fixed--point scheme for
+  automata--based specifications. This scheme covers safety and reachability
+  as special cases, and we illustrate its structure on the considered
+  nonlinear system. The current implementation in \texttt{Controller.py} is a
+  prototype, with some parts (such as the labelling--dependent successor
+  computation) left as explicit TODOs.
+
+  \item \textbf{Temporal scenario with automata.}
+  We encode the scenario ``$R_1$ or $R_2$ then $R_3$ while avoiding $R_4$'' as
+  a specification automaton and describe controller synthesis on the product
+  system, demonstrating how complex temporal patterns can be handled within
+  the same framework.
+
+  \item \textbf{Numerical illustration.}
+  We compute the transition system for a representative grid and inspect the
+  structure of the abstraction and of the fixed--point iterations. These
+  examples highlight the trade--off between abstraction precision,
+  computational cost, and robustness.
+\end{itemize}
+
+% ==================================================
+% 2. BACKGROUND ON SYMBOLIC CONTROL
+% ==================================================
+\chapter{Background on Symbolic Control}
+
+\section{Continuous vs. Symbolic Models}
+
+We start from a continuous--state model of the form
+\begin{equation}
+  x^{+} = f(x, u, w),
+  \label{eq:continuous_dynamics}
+\end{equation}
+where
+\begin{itemize}
+  \item $x \in X \subset \mathbb{R}^{n}$ is the continuous state,
+  \item $u \in U \subset \mathbb{R}^{m}$ is the control input,
+  \item $w \in W \subset \mathbb{R}^{p}$ is a bounded disturbance.
+\end{itemize}
+The sets $X$, $U$ and $W$ are compact intervals (boxes) describing physical
+limits and disturbance bounds. For each fixed $u$ and $w$, the map
+$f(\cdot, u, w)$ is assumed to be continuous and differentiable with respect
+to $x$.
+
+From the viewpoint of formal verification, the system \eqref{eq:continuous_dynamics}
+has an uncountable state space and cannot be handled directly by algorithms
+designed for finite systems. Symbolic control therefore introduces a
+\emph{symbolic} (or abstract) model:
+\begin{equation}
+  \mathcal{S} = (X_{\mathrm{disc}}, U_{\mathrm{disc}}, \Delta, \mathit{AP}, L),
+\end{equation}
+where:
+\begin{itemize}
+  \item $X_{\mathrm{disc}} = \{1, \dots, N_x\}$ is a finite set of abstract
+  states, each representing a cell of the continuous state space $X$,
+  \item $U_{\mathrm{disc}} = \{1, \dots, N_u\}$ is a finite set of abstract
+  control inputs, obtained by discretising $U$,
+  \item $\Delta \subseteq X_{\mathrm{disc}} \times U_{\mathrm{disc}} \times X_{\mathrm{disc}}$
+  is a transition relation (or multi--valued transition map),
+  \item $\mathit{AP}$ is a finite set of atomic propositions,
+  \item $L : X_{\mathrm{disc}} \to 2^{\mathit{AP}}$ is a labelling function
+  that associates to each abstract state the set of propositions that hold in
+  the corresponding region of the continuous space.
+\end{itemize}
+
+The abstract model is constructed such that it \emph{over--approximates} the
+behaviour of the continuous system: whenever there exists a trajectory of
+\eqref{eq:continuous_dynamics} that remains within the bounds of a cell
+$x_i$ and, under a given control $u_j$, reaches another cell $x_k$ in one
+time step (for some disturbance $w$), then the transition
+$(x_i, u_j, x_k)$ is included in $\Delta$. This ensures that any controller
+synthesised on the symbolic model and proven correct with respect to a
+specification is also correct for the original system.
+
+\section{Symbolic Abstraction Pipeline}
+
+The abstraction--based design methodology used in this project follows a
+three--stage pipeline:
+
+\begin{enumerate}
+  \item \textbf{Abstraction.}
+  We discretise the continuous state space $X$ and control space $U$ using
+  user--defined cell sizes. For each discrete state $x_i \in X_{\mathrm{disc}}$
+  and control $u_j \in U_{\mathrm{disc}}$, we compute a conservative
+  over--approximation of the one--step reachable set using a
+  Jacobian--based interval method. The result is encoded in a transition
+  tensor $T[x_i, u_j]$.
+
+  \item \textbf{Controller synthesis.}
+  Given a specification (safety, reachability or a temporal scenario encoded
+  by an automaton), we run fixed--point algorithms on the symbolic model to
+  compute sets of winning states and associated control policies. In the
+  current codebase, this is implemented as a prototype automata--based
+  controller in \texttt{Controller.py}.
+
+  \item \textbf{Concretisation and implementation.}
+  The abstract controller selects, for each cell, a set of discrete controls.
+  In the concrete closed--loop system, the current continuous state $x$ is
+  mapped to its cell index $x_i$, and one of the corresponding discrete
+  controls $u_j$ is applied. Since the abstraction is conservative, the
+  satisfaction of the specification on the symbolic model implies its
+  satisfaction on the continuous system.
+\end{enumerate}
+
+Our implementation follows this pipeline and exposes the abstraction stage as
+a reusable component. Specifications and synthesis algorithms are built on top
+of the resulting transition system.
+
+\section{Types of Specifications}
+
+We consider three main classes of specifications:
+
+\begin{itemize}
+  \item \textbf{Safety specifications.}
+  A safety requirement typically has the form ``always stay inside a safe
+  region $S$'' or ``never enter an obstacle region $O$''. On the symbolic
+  model, this is expressed as invariance of a set of cells. A safety
+  controller enforces that all reachable states remain in $S$ for all time
+  and for all disturbances. In our framework, such controllers can be seen
+  as a special case of automata--based synthesis, where the automaton
+  recognises infinite sequences that never visit $O$.
+
+  \item \textbf{Reachability specifications.}
+  A reachability requirement is of the form ``eventually reach a target
+  region $T$ while staying in $S$''. It can be encoded as a winning set in
+  the product of the transition system with a simple automaton that has
+  accepting states corresponding to $T$.
+
+  \item \textbf{Temporal and automata--based specifications.}
+  More complex scenarios, such as ``visit $R_1$ or $R_2$, then $R_3$, while
+  always avoiding $R_4$'', involve both ordering and safety constraints.
+  These can be captured using regular languages or linear temporal logic and
+  compiled into a deterministic finite automaton. The controller is then
+  synthesised on the product of the symbolic model and this automaton.
+\end{itemize}
+
+In the remainder of the report we focus on these specification classes, with
+the temporal scenario serving as a running example.
+
+% ==================================================
+% 3. CONTINUOUS SYSTEM MODELLING
+% ==================================================
+\chapter{Continuous System Modelling}
+
+\section{Dynamics}
+
+The continuous system considered in this project is a nonlinear system with
+three state variables and two control inputs. The state
+\[
+  x = \begin{bmatrix} x_1 \\ x_2 \\ x_3 \end{bmatrix}
+  = \begin{bmatrix} p_x \\ p_y \\ \theta \end{bmatrix}
+\]
+collects the planar position $(p_x, p_y)$ and the orientation $\theta$ of the
+robot. The control input
+\[
+  u = \begin{bmatrix} u_1 \\ u_2 \end{bmatrix}
+  = \begin{bmatrix} v \\ \omega \end{bmatrix}
+\]
+represents the linear velocity $v$ and angular velocity $\omega$. The
+disturbance vector
+\[
+  w = \begin{bmatrix} w_1 \\ w_2 \end{bmatrix}
+\]
+models bounded perturbations acting on the translational motion.
+
+In discrete time, with sampling period normalised to $1$ for simplicity, the
+dynamics are written as
+\begin{equation}
+  x^{+} = f(x, u, w)
+  =
+  \begin{bmatrix}
+    u_1 \cos(x_3) - 0.1\, x_1 + w_1 \\
+    u_1 \sin(x_3) - 0.1\, x_2 + w_2 \\
+    u_2 - 0.05\, x_3
+  \end{bmatrix}.
+  \label{eq:f_dynamics}
+\end{equation}
+The first two components correspond to a damped unicycle model, where the
+position evolves according to the current velocity and heading, with a linear
+damping term $-0.1\,x_i$ capturing friction or stabilisation towards the
+origin. The third component represents the angular dynamics with a damping
+term $-0.05\,x_3$.
+
+In the implementation, the dynamics are encapsulated in the \texttt{System}
+class, which exposes the function $f$ and its Jacobians. A representative
+snippet illustrating the dynamics is:
+
+\begin{lstlisting}[style=pythonstyle, caption={Nonlinear dynamics of the robot}, label={lst:dynamics}]
+import numpy as np
+
+# Define your system: 3D nonlinear dynamics
+def f(x, u, w):
+    # Example: mobile robot or 2D position + angle system
+    dx1 = u[0] * np.cos(x[2]) - 0.1 * x[0] + w[0]
+    dx2 = u[0] * np.sin(x[2]) - 0.1 * x[1] + w[1]
+    dx3 = u[1] - 0.05 * x[2]  # angular velocity
+    return np.array([dx1, dx2, dx3])
+\end{lstlisting}
+
+This function is used by the abstraction engine to propagate cell centres and
+to compute nominal successor states.
+
+\subsection*{Jacobian-based linearisation}
+
+To construct tight interval over--approximations of the reachable sets, we use
+first--order Taylor expansion of $f$ around the centre of each state cell and
+the centre of the disturbance interval. This requires the Jacobians
+\[
+  J_x(x,u) = \frac{\partial f}{\partial x}(x, u, w),
+  \qquad
+  J_w(x,u) = \frac{\partial f}{\partial w}(x, u, w),
+\]
+which, for the dynamics \eqref{eq:f_dynamics}, read
+\begin{equation}
+  J_x(u) =
+  \begin{bmatrix}
+    -0.1 & 0 & -u_1 \sin(x_3) \\
+    0 & -0.1 & u_1 \cos(x_3) \\
+    0 & 0 & -0.05
+  \end{bmatrix},
+  \qquad
+  J_w =
+  \begin{bmatrix}
+    1 & 0 \\
+    0 & 1 \\
+    0 & 0
+  \end{bmatrix}.
+  \label{eq:jacobians}
+\end{equation}
+
+In code, these Jacobians are implemented as:
+
+\begin{lstlisting}[style=pythonstyle, caption={Jacobian matrices of the dynamics}, label={lst:jacobians}]
+import numpy as np
+
+def J_x(x, u):
+    return np.array([
+        [-0.1, 0.0, -u[0] * np.sin(x[2])],
+        [0.0, -0.1,  u[0] * np.cos(x[2])],
+        [0.0,  0.0, -0.05]
+    ])
+
+def J_w(x, u):
+    return np.array([
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [0.0, 0.0]
+    ])
+\end{lstlisting}
+
+The absolute values of these Jacobians, multiplied by the widths of the state
+and disturbance cells, determine the size of the uncertainty interval around
+the nominal successor, as detailed in Chapter~\ref{chap:symbolic_abstraction}.
+
+\section{Bounded Sets}
+
+The state, input and disturbance variables are constrained to lie in bounded
+intervals:
+\begin{align}
+  X &= [x_1^{\min}, x_1^{\max}] \times
+       [x_2^{\min}, x_2^{\max}] \times
+       [x_3^{\min}, x_3^{\max}], \\
+  U &= [u_1^{\min}, u_1^{\max}] \times
+       [u_2^{\min}, u_2^{\max}], \\
+  W &= [w_1^{\min}, w_1^{\max}] \times [w_2^{\min}, w_2^{\max}].
+\end{align}
+
+In our implementation, we use generic hyper--rectangular bounds; a typical
+choice for a planar robot example is
+\begin{align}
+  X &= [0, 10] \times [0, 10] \times [-\pi, \pi], \\
+  U &= [0, 1] \times \left[-\frac{\pi}{4}, \frac{\pi}{4}\right], \\
+  W &= [w_1^{\min}, w_1^{\max}] \times [w_2^{\min}, w_2^{\max}],
+\end{align}
+where the disturbance bounds are small symmetric intervals around zero
+(e.g.\ $w_i^{\min} = -w_{\max}$, $w_i^{\max} = w_{\max}$), reflecting modelling
+errors and external perturbations.
+
+In code, these bounds are stored in the discretisation object as arrays such as:
+
+\begin{lstlisting}[style=pythonstyle, caption={State, input and disturbance bounds}, label={lst:bounds}]
+import numpy as np
+
+X_bounds = np.array([
+    [0.0, 10.0],
+    [0.0, 10.0],
+    [-np.pi, np.pi]
+])
+
+U_bounds = np.array([
+    [0.0, 1.0],
+    [-np.pi / 4, np.pi / 4]
+])
+
+W_bounds = np.array([
+    [-0.05, 0.05],
+    [-0.05, 0.05]
+])
+\end{lstlisting}
+
+These arrays are passed to the \texttt{Abstract} discretisation class and
+used in both the abstraction and the computation of the disturbance width
+vector.
+
+\section{Assumptions}
+
+To ensure the correctness of the abstraction and the convergence of the
+synthesis algorithms, we adopt the following modelling assumptions:
+
+\begin{itemize}
+  \item \textbf{Regularity.}
+  The dynamics $f$ are continuously differentiable with respect to $x$ and
+  $w$ on $X \times U \times W$, so that the Jacobians \eqref{eq:jacobians}
+  exist and are bounded on each cell.
+
+  \item \textbf{Boundedness.}
+  The state, control and disturbance sets $X$, $U$, and $W$ are compact
+  hyperrectangles. Under the considered controllers, trajectories are
+  expected to remain inside $X$; this is enforced at the symbolic level by
+  removing transitions that leave the domain.
+
+  \item \textbf{Sampled--data semantics.}
+  The discrete--time model \eqref{eq:f_dynamics} is interpreted as the
+  evolution of the system over one sampling period, assuming the control
+  input is held constant during that period and disturbances satisfy
+  $w \in W$.
+
+  \item \textbf{Disturbance model.}
+  Disturbances are treated as additive, bounded and independent from the
+  control. The abstraction framework does not rely on any probabilistic
+  model of $w$; it only assumes that all possible realisations lie in $W$.
+
+  \item \textbf{Angular wrap--around.}
+  The orientation $\theta$ is an angular variable defined modulo $2\pi$.
+  In the abstraction, we represent $\theta$ by an interval (e.g.\ $[-\pi,\pi]$)
+  and handle wrap--around explicitly when mapping reachable intervals back to
+  discrete cells. This is crucial for correctness near the boundaries.
+\end{itemize}
+
+These assumptions are consistent with the interval abstraction method and
+with the symbolic control algorithms used later in the report.
+
+% ==================================================
+% 4. DISCRETISATION OF STATE AND CONTROL SPACES
+% ==================================================
+\chapter{Discretisation of State and Control Spaces}
+
+\section{State-Space Grid}
+
+The continuous domain
+\[
+X = [x_{\min},x_{\max}] \times [y_{\min},y_{\max}] \times [\theta_{\min},\theta_{\max}]
+\]
+is discretised into a regular grid by dividing each dimension into a fixed
+number of cells. This transforms the infinite set of continuous states into a
+finite set of symbolic states, each associated with a rectangular cell in the
+continuous state space.
+
+The cell widths along each dimension are
+\[
+\Delta x = \frac{x_{\max}-x_{\min}}{K_x},\qquad 
+\Delta y = \frac{y_{\max}-y_{\min}}{K_y},\qquad
+\Delta\theta = \frac{\theta_{\max}-\theta_{\min}}{K_\theta},
+\]
+and they are computed in the discretisation module as follows:
+
+\begin{lstlisting}[style=pythonstyle, caption={Discretisation of state, control and disturbance spaces}, label={lst:dxcell}]
+X_bounds = ...
+U_bounds = ...
+W_bounds = ...
+cells_per_dim_x = ...
+cells_per_dim_u = ...
+
+dx_cell = (X_bounds[:, 1] - X_bounds[:, 0]) / cells_per_dim_x
+du_cell = (U_bounds[:, 1] - U_bounds[:, 0]) / cells_per_dim_u
+dw_cell = (W_bounds[:, 1] - W_bounds[:, 0])
+
+M_x = build_multiplier_array(cells_per_dim_x)
+M_u = build_multiplier_array(cells_per_dim_u)
+
+N_x = M_x[-1]
+N_u = M_u[-1]
+\end{lstlisting}
+
+The vectors \texttt{dx\_cell}, \texttt{du\_cell} and \texttt{dw\_cell} contain
+the widths of the cells in each dimension for the state, control and
+disturbance spaces, respectively. The multiplier arrays \texttt{M\_x} and
+\texttt{M\_u} are then used for index--coordinate conversions, and
+\texttt{N\_x}, \texttt{N\_u} denote the total number of symbolic states and
+control inputs.
+
+In the actual implementation, these quantities are members of the
+\texttt{Abstract} class defined in \texttt{Discretisation.py}.
+
+\section{Coordinate--Index Mapping}
+
+To manipulate the symbolic state space efficiently, we use a bijection between:
+\begin{itemize}
+    \item multidimensional grid coordinates \((i,j,k)\),
+    \item and a single scalar index \(\xi\in\{1,\dots,N_X\}\).
+\end{itemize}
+
+This is done through a multiplier array $M$ computed from the number of cells
+per dimension. The mapping from index to coordinates and back is implemented
+by:
+
+\begin{lstlisting}[style=pythonstyle, caption={Index-to-coordinate mapping}, label={lst:idxtocoord}]
+def idx_to_coord(self, state_idx):
+    state_coord = np.zeros(len(self.M_x) - 1, dtype=int)
+    for d in range(len(self.M_x) - 1):
+        remainder = (state_idx - 1) % self.M_x[d + 1]
+        state_coord[d] = np.floor(remainder / self.M_x[d]) + 1
+    return state_coord
+\end{lstlisting}
+
+\begin{lstlisting}[style=pythonstyle, caption={Coordinate-to-index mapping}, label={lst:coordtoidx}]
+def coord_to_idx(self, state_coord):
+    return (state_coord - 1).transpose() @ self.M_x[0: len(state_coord)] + 1
+\end{lstlisting}
+
+The first snippet reconstructs the grid coordinates from a scalar index using
+modular arithmetic. The second snippet performs the inverse operation by a dot
+product between shifted coordinates and the multiplier array. Together, they
+allow constant--time conversion between scalar indices and geometric positions
+on the grid.
+
+\section{Control Discretisation}
+
+The continuous control space
+\[
+U = [u_{\min,1},u_{\max,1}] \times [u_{\min,2},u_{\max,2}]
+\]
+is discretised in the same way as the state space. A finite set of control
+inputs is generated by iterating over all discrete control coordinates and
+mapping them to continuous values:
+
+\begin{lstlisting}[style=pythonstyle, caption={Control discretisation}, label={lst:controldisc}]
+U_disc = np.zeros((len(U_bounds), N_u))
+
+for control_idx in range(1, N_u + 1):
+    coord = idx_to_coord(control_idx, M_u)
+    U_disc[:, control_idx - 1] = (
+        U_bounds[:, 0] +
+        (coord - 1) * du_cell
+    )
+\end{lstlisting}
+
+For each control index, the corresponding grid coordinate is computed, scaled
+by the control cell size \texttt{du\_cell}, shifted by the lower bounds
+\texttt{U\_bounds[:,0]}, and stored as a continuous input in
+\texttt{U\_disc}. This yields a structured, finite set of control actions that
+approximate the continuous control space.
+
+\section{Trade-Off: Precision vs. Complexity}
+
+The choice of the number of cells per dimension directly impacts:
+\begin{itemize}
+    \item the total number of states \(N_X = K_x K_\theta\),
+    \item the total number of control inputs \(N_U = K_{u,1} K_{u,2}\),
+    \item and thus the computational cost of abstraction and synthesis.
+\end{itemize}
+
+The transition system is computed for every pair
+\((\text{state}, \text{control})\), which yields an overall complexity of
+\[
+\mathcal{O}(N_X N_U)
+\]
+for the abstraction phase. In the implementation, the symbolic model is
+constructed using:
+
+\begin{lstlisting}[style=pythonstyle, caption={Symbolic model computation call}, label={lst:computeT}]
+T = compute_symbolic_model(System, Discretisation)
+\end{lstlisting}
+
+and the nested iteration:
+
+\begin{lstlisting}[style=pythonstyle, caption={Nested loops over all state-control pairs}, label={lst:loops}]
+for state_idx in range(1, N_x + 1):
+    state_coord = idx_to_coord(state_idx, M_x)
+    x_center = X_bounds[:, 0] + (state_coord - 0.5) * dx_cell
+
+    for control_idx in range(1, N_u + 1):
+        u_control = U_disc[:, control_idx - 1]
+        # compute successors for (state_idx, control_idx)
+\end{lstlisting}
+
+A finer grid increases the precision of the abstraction but also increases the
+size of \texttt{T} and the computation time, so discretisation parameters must
+balance accuracy and tractability.
+
+% ==================================================
+% 5. SYMBOLIC ABSTRACTION (TRANSITION SYSTEM)
+% ==================================================
+\chapter{Symbolic Abstraction (Transition System)}
+\label{chap:symbolic_abstraction}
+
+\section{Reachable Set Approximation}
+
+The symbolic abstraction approximates the evolution of the continuous system
+\[
+x^{+} = f(x,u,w)
+\]
+at the level of grid cells. For each symbolic state (cell) and each discrete
+control input, it computes an over--approximation of all possible successors
+under bounded disturbances.
+
+The core of the abstraction logic first computes the nominal successor of the
+cell center and then an interval that captures uncertainty:
+
+\begin{lstlisting}[style=pythonstyle, caption={Nominal successor and uncertainty bound}, label={lst:xsucc_dxsucc}]
+x_center = ...
+u_control = ...
+w_center = 0.5 * (W_bounds[:, 0] + W_bounds[:, 1])
+
+x_succ_center = f(x_center, u_control, w_center)
+
+dx_succ = (
+    0.5 * np.abs(J_x(x_center, u_control)) @ dx_cell
+  + 0.5 * np.abs(J_w(x_center, u_control)) @ W_width
+)
+
+R = np.vstack([
+    x_succ_center - dx_succ,
+    x_succ_center + dx_succ
+])
+\end{lstlisting}
+
+Here, \texttt{x\_succ\_center} is the nominal next state, obtained by applying
+the continuous dynamics to the center of the cell under the given control and
+the center of the disturbance box. The vector \texttt{dx\_succ} is an
+over--approximation of how far the successor can deviate from
+\texttt{x\_succ\_center} due to:
+\begin{itemize}
+    \item the size of the cell (\texttt{dx\_cell}),
+    \item the disturbance width (\texttt{W\_width}),
+    \item and the sensitivity of the dynamics encoded in the Jacobians
+          \texttt{Jx} and \texttt{Jw}.
+\end{itemize}
+The matrix \texttt{R} thus stores the lower and upper bounds of the reachable
+set in continuous space.
+
+In the actual implementation, this logic appears in the
+\texttt{SymbolicAbstraction.compute\_symbolic\_model()} method in
+\texttt{AbstractSpace.py}.
+
+\section{Computing Successor Range}
+
+Once the continuous reachable interval \texttt{R} is obtained, it is mapped
+back to symbolic coordinates and indices. First, angular wrap--around is
+handled (see next section), then the bounds are discretised:
+
+\begin{lstlisting}[style=pythonstyle, caption={Discretisation of reachable set bounds}, label={lst:minmaxsucc}]
+R = R.transpose()
+
+if np.all(R[:, 0] >= X_bounds[:, 0]) and np.all(R[:, 1] <= X_bounds[:, 1]):
+    min_succ_coord = np.floor(
+        (R[:, 0] - X_bounds[:, 0]) / dx_cell
+    ).astype(int) + 1
+
+    max_succ_coord = np.ceil(
+        (R[:, 1] - X_bounds[:, 0]) / dx_cell
+    ).astype(int)
+
+    min_successor = coord_to_idx(min_succ_coord, M_x)
+    max_successor = coord_to_idx(max_succ_coord, M_x)
+\end{lstlisting}
+
+The condition ensures the reachable set remains inside the global state
+bounds. The floor and ceil operations map continuous bounds to the smallest
+and largest grid cell indices that intersect the reachable interval, and these
+coordinates are then transformed into discrete state indices.
+
+\section{Special Case: Angular Wraparound}
+
+The orientation \(\theta\) is defined on a periodic domain \([-\pi,\pi]\).
+When the reachable set in \(\theta\) crosses this boundary, naive intervals
+become inconsistent. To correct this, the angular component of \texttt{R} is
+adjusted:
+
+\begin{lstlisting}[style=pythonstyle, caption={Angular wrap-around handling}, label={lst:wrap}]
+if R[0, 2] < -np.pi and R[1, 2] >= -np.pi:
+    R[0, 2] += 2 * np.pi
+elif R[0, 2] < -np.pi and R[1, 2] < -np.pi:
+    R[0, 2] += 2 * np.pi
+    R[1, 2] += 2 * nppi
+elif R[1, 2] > np.pi and R[0, 2] <= np.pi:
+    R[1, 2] -= 2 * np.pi
+elif R[1, 2] > np.pi and R[0, 2] > np.pi:
+    R[1, 2] -= 2 * np.pi
+    R[0, 2] -= 2 * np.pi
+\end{lstlisting}
+
+By shifting the angular bounds by multiples of \(2\pi\), the reachable
+interval for \(\theta\) is always represented consistently inside a window of
+length \(2\pi\). This preserves the correctness of the abstraction despite
+the circular nature of the angle.
+
+\section{Transition Tensor}
+
+For each pair \((\xi,u)\), the abstraction stores the corresponding successor
+interval \([\xi_{\min},\xi_{\max}]\) in a three--dimensional tensor:
+
+\begin{lstlisting}[style=pythonstyle, caption={Transition tensor allocation and filling}, label={lst:Talloc_store}]
+T = np.zeros((N_x, N_u, 2), dtype=int)
+
+for state_idx in range(1, N_x + 1):
+    state_coord = idx_to_coord(state_idx, M_x)
+    x_center = X_bounds[:, 0] + (state_coord - 0.5) * dx_cell
+
+    for control_idx in range(1, N_u + 1):
+        u_control = U_disc[:, control_idx - 1]
+
+        # compute R, handle wrap-around, discretise to min_successor, max_successor
+
+        if valid_reachable_set:
+            T[state_idx - 1, control_idx - 1, 0] = min_successor
+            T[state_idx - 1, control_idx - 1, 1] = max_successor
+\end{lstlisting}
+
+The resulting tensor
+\[
+T[\xi, u, 0] = \xi_{\min}, \qquad
+T[\xi, u, 1] = \xi_{\max}
+\]
+encodes, in a compact form, the symbolic transition relation used in the
+subsequent controller synthesis algorithms. In the Python code, this structure
+is returned by \texttt{compute\_symbolic\_model()} and stored as the member
+\texttt{T} of the \texttt{SymbolicAbstraction} class.
+
+% ==================================================
+% 6. SOFTWARE ARCHITECTURE AND DATA STRUCTURES
+% ==================================================
+\chapter{Software Architecture and Data Structures}
+
+The theoretical framework of symbolic control was translated into a modular
+and efficient software architecture. This structure ensures a clear
+separation of concerns, mirroring the conceptual pipeline of abstraction,
+synthesis, and concretisation.
+
+\section{Code Structure}
+
+The implementation is organized into several core Python classes, each
+responsible for a distinct part of the symbolic control pipeline:
+
+\begin{itemize}
+    \item \textbf{\texttt{System}} (in \texttt{System.py}): Encapsulates the
+    continuous nonlinear dynamics $ x^+ = f(x, u, w) $ and their Jacobians
+    $ J_x $ and $ J_w $. It serves as the ground--truth model for simulation
+    and for the abstraction engine.
+    
+    \item \textbf{\texttt{Abstract}} (in \texttt{Discretisation.py}): Manages
+    the partitioning of the continuous state and control spaces. Its key
+    responsibilities include:
+    \begin{itemize}
+        \item storing the bounds \texttt{X\_bounds}, \texttt{U\_bounds},
+              \texttt{W\_bounds} and the cell sizes \texttt{dx\_cell},
+              \texttt{du\_cell}, \texttt{dw\_cell};
+        \item computing multiplier arrays \texttt{M\_x}, \texttt{M\_u} and
+              the corresponding \texttt{N\_x}, \texttt{N\_u};
+        \item implementing \texttt{coord\_to\_idx()} and
+              \texttt{idx\_to\_coord()} to convert between multi--dimensional
+              grid coordinates and a single index;
+        \item implementing \texttt{discretize\_control()} to generate the
+              finite set of control inputs.
+    \end{itemize}
+
+    \item \textbf{\texttt{SymbolicAbstraction}} (in \texttt{AbstractSpace.py}):
+    The core class that constructs the finite transition system. Its method
+    \texttt{compute\_symbolic\_model()} iterates over all state--control pairs
+    $(\xi, \sigma)$, uses the \texttt{System} dynamics to compute the
+    reachable set via interval arithmetic, applies angular wrap--around, and
+    maps this set back to a range of successor symbolic states
+    \verb|[min_successor, max_successor]| stored in a 3D tensor \texttt{T}.
+    It also provides methods to export the transition relation to CSV.
+
+    \item \textbf{\texttt{Labeling}} (in \texttt{Labeling.py}): Implements the
+    labelling function $ L $. It evaluates whether a given symbolic state
+    belongs to a predefined region (e.g.\ $ R_1, R_4 $) and builds a dictionary
+    mapping states to their corresponding atomic propositions
+    (e.g.\ \verb|{'goal'}|, \verb|{'forbidden'}|). The mapping is accessible
+    via the \verb|__getitem__| operator.
+
+    \item \textbf{\texttt{Automaton}} (in \texttt{SpecificationAutomaton.py}):
+    A lightweight class representing the finite--state automaton that encodes
+    the temporal specification. It stores the automaton's states, inputs,
+    transition function, initial state, and final (accepting) states.
+
+    \item \textbf{\texttt{SymbolicController}} (in \texttt{Controller.py}):
+    Orchestrates the controller synthesis. It loads the symbolic abstraction
+    and discretisation, constructs a tensor \texttt{gSample} based on the
+    transition tensor \texttt{T}, and sets up a value function \texttt{V} and
+    controller \texttt{h2} for a fixed--point algorithm. The current
+    implementation is a prototype: some steps (such as the labelling--based
+    state update, the function \texttt{h1} and the handling of angular
+    wrap--around in the synthesis stage) are left as explicit TODOs in the
+    code.
+\end{itemize}
+
+\section{Data Structures}
+
+The efficiency of the implementation hinges on key data structures:
+
+\begin{itemize}
+    \item \textbf{Transition Tensor (\texttt{T})}: A 3D NumPy array of shape
+    \texttt{(N\_x, N\_u, 2)}. For a given state index \texttt{i} and control
+    index \texttt{j}, \texttt{T[i, j, 0]} and \texttt{T[i, j, 1]} store the
+    minimum and maximum successor state indices, representing the
+    over--approximated reachable set.
+
+    \item \textbf{Labeling Dictionary}: A dictionary where keys are state
+    indices and values are lists of labels (e.g.\ \verb|{1502: ['R1'], 4500: ['R4','forbidden']}|)
+    that define the properties of each state, as constructed in
+    \texttt{Labeling.build\_labeling\_dict()}.
+
+    \item \textbf{Value Function and Policy Map (\texttt{V} and \texttt{h2})}:
+    2D arrays storing, for each pair of abstract states $(\psi,\xi)$ in the
+    product of the automaton and the transition system, a cost--to--go
+    approximation and the selected control action. These arrays are initialised
+    in \texttt{SymbolicController} and updated by the fixed--point loop.
+\end{itemize}
+
+\section{Computational Complexity}
+
+The computational and spatial complexity is significant, a direct consequence
+of the curse of dimensionality:
+
+\begin{itemize}
+    \item \textbf{Time Complexity (Abstraction).} The abstraction phase is
+    $ \mathcal{O}(N_x \times N_u) $, since \texttt{compute\_symbolic\_model()}
+    processes each state--control pair once. For a grid with
+    $ N_x = K_x K_y K_\theta $ states and $ N_u = K_{u,1}K_{u,2} $ controls,
+    this can reach several hundred thousand or millions of iterations.
+
+    \item \textbf{Time Complexity (Synthesis).} The fixed--point controller
+    synthesis algorithm also scales with the size of the product state space
+    (transition system $\times$ automaton). In the current prototype, this is
+    handled by iterating over all relevant $(\psi,\xi)$ pairs until a
+    convergence or iteration limit is reached.
+
+    \item \textbf{Space Complexity.} Storing the transition tensor \texttt{T}
+    requires memory of order $ O(N_x \times N_u) $, which is usually the main
+    bottleneck for higher--dimensional systems. Additional arrays (for
+    \texttt{V}, \texttt{h2}, \texttt{gSample}) contribute additively but not
+    multiplicatively.
+\end{itemize}
+
+\section{Representative Parameters}
+
+To illustrate the framework, one can consider the following representative
+parameters for a planar robot example:
+
+\begin{table}[h!]
+    \centering
+    \begin{tabular}{l l l l}
+        \toprule
+        \textbf{Parameter} & \textbf{Symbol} & \textbf{Value} & \textbf{Description} \\
+        \midrule
+        State Bounds & $ X $ & $ [0,10] \times [0,10] \times [-\pi, \pi] $ & Operational area and heading \\
+        State Cells & $ N_x $ & $ 50 \times 50 \times 16 $ & Resolution of discretisation \\
+        Control Bounds & $ U $ & $ [0, 1] \times [-\pi/4, \pi/4] $ & Velocity limits \\
+        Control Cells & $ N_u $ & $ 5 \times 2 $ & Discrete control actions \\
+        Disturbance Bounds & $ W $ & $ [-0.1, 0.1]^2 $ & Bounded noise on dynamics \\
+        \bottomrule
+    \end{tabular}
+    \caption{Representative discretisation and disturbance parameters.}
+    \label{tab:parameters}
+\end{table}
+
+These values are compatible with the abstractions implemented in the Python
+code and can be adjusted according to the desired trade--off between precision
+and complexity.
+
+% ==================================================
+% 7. NUMERICAL EXPERIMENTS AND ILLUSTRATIVE SCENARIOS
+% ==================================================
+\chapter{Numerical Experiments and Illustrative Scenarios}
+
+\section{Illustrative Scenarios}
+
+With the symbolic abstraction and the prototype controller in place, several
+typical scenarios can be investigated:
+
+\begin{itemize}
+  \item \textbf{Safety Task.} The controlled trajectories must avoid a
+  forbidden region $R_4$ for all time. Safety can be encoded by labelling
+  states that belong to $R_4$ as ``forbidden'' and ensuring that the
+  controller never selects a path that leads into these states.
+
+  \item \textbf{Reachability Task.} The state must eventually enter a target
+  region $R_3$ while remaining in a safe set $S$. This can be treated as a
+  reach--avoid problem, either directly or via a small automaton with an
+  accepting state representing ``in $R_3$''.
+
+  \item \textbf{Temporal Scenario.} The full temporal logic specification
+  involving regions $R_1$, $R_2$, $R_3$ and $R_4$ is:
+  \[
+  \phi = \text{``visit $R_1$ or $R_2$, then $R_3$, while always avoiding $R_4$''}.
+  \]
+  This is encoded as a deterministic automaton over atomic propositions
+  indicating which region the current state belongs to, and the product of
+  this automaton with the transition system is used for controller synthesis.
+\end{itemize}
+
+In the current code, exporting the transition tensor \texttt{T} and the
+labelling dictionary makes it straightforward to generate plots of reachable
+sets, invariant sets, and representative trajectories using external Python
+scripts. The figures in this chapter are provided as placeholders and can be
+filled with actual simulation results once the corresponding plotting scripts
+are available.
+
+\section{Figure Placeholders}
+
+The following figures are placeholders; the \verb|\includegraphics| lines are
+commented out and can be enabled once the corresponding image files are
+generated.
+
+\begin{figure}[htbp]
+    \centering
+    % \includegraphics[width=\textwidth]{safety_trajectories.png}
+    \caption{Placeholder for safety controller trajectories avoiding $R_4$.}
+    \label{fig:safety}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    % \includegraphics[width=\textwidth]{reachability_trajectory.png}
+    \caption{Placeholder for reachability controller trajectories to $R_3$.}
+    \label{fig:reachability}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    % \includegraphics[width=\textwidth]{temporal_trajectories.png}
+    \caption{Placeholder for trajectories satisfying the temporal scenario.}
+    \label{fig:temporal}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    % \includegraphics[width=0.8\textwidth]{automata.png}
+    \caption{Placeholder for the specification automaton diagram.}
+    \label{fig:automaton}
+\end{figure}
+
+These placeholders ensure that the structure of the report is ready for the
+insertion of simulation results without breaking compilation.
+
+% ==================================================
+% 8. DISCUSSION AND CONCLUSION
+% ==================================================
+\chapter{Discussion and Conclusion}
+
+\section{Discussion}
+
+\subsection*{Robustness}
+
+The primary source of robustness in this framework stems from the use of
+\emph{over--approximation} during the reachable set computation. By accounting
+for the worst--case effect of disturbances and state uncertainty within a
+cell, any controller synthesised on the symbolic model is guaranteed to work
+for the original continuous system, provided that the disturbance always lies
+in $W$. The conservative nature of the abstraction ensures that if a
+specification is satisfied on the symbolic model, it is also satisfied by the
+concrete system.
+
+\subsection*{Limitations}
+
+Despite its strengths, the approach faces several limitations:
+
+\begin{itemize}
+    \item \textbf{Curse of Dimensionality.} The exponential growth of the
+    state space with the number of continuous dimensions is the most
+    significant barrier. Scaling to systems with more than four or five state
+    variables becomes computationally challenging.
+
+    \item \textbf{Fixed Grid Resolution.} The initial discretisation is fixed.
+    A coarse grid may be too imprecise to find a solution (false negative),
+    while a fine grid leads to intractable computation times and memory usage.
+    Adaptive or non--uniform grids are not yet implemented.
+
+    \item \textbf{Over--conservativeness.} Interval arithmetic can lead to
+    pessimistic reachable sets, especially for highly nonlinear systems or
+    long sampling periods. This can result in controllers that are more
+    restrictive than necessary, or in the absence of a controller even when a
+    continuous solution exists.
+
+    \item \textbf{Prototype Controller.} The current implementation of the
+    automata--based controller in \texttt{Controller.py} is a prototype:
+    several steps (labelling--dependent successor computation, refinement of
+    angular handling in the synthesis loop) remain as TODOs. Completing these
+    parts and validating them extensively is an important next step.
+\end{itemize}
+
+\section{Conclusion}
+
+\subsection*{Summary of Contributions}
+
+This project demonstrated a complete pipeline for the symbolic control of a
+nonlinear mobile--robot--like system at the abstraction level. We:
+
+\begin{itemize}
+    \item modelled the continuous dynamics and their Jacobians;
+    \item designed and implemented a discretisation scheme for state, control
+          and disturbance spaces;
+    \item constructed a conservative symbolic abstraction using a
+          Jacobian--based interval method and stored it in a transition tensor;
+    \item defined a labelling mechanism and a specification automaton to handle
+          temporal logic--like scenarios;
+    \item implemented a prototype fixed--point controller on the symbolic
+          model, laying the groundwork for safety, reachability, and
+          automata--based specifications.
+\end{itemize}
+
+The implementation provides a clear, modular architecture that bridges formal
+methods with nonlinear control theory and can serve as a basis for further
+research and development.
+
+\subsection*{Perspectives}
+
+Several interesting extensions are left for future work:
+
+\begin{itemize}
+    \item Completing and optimising the automata--based controller, including
+    full support for label--dependent transitions, angular wrap--around in the
+    synthesis loop, and efficient data structures for large grids.
+
+    \item Integrating systematic visualisation and simulation scripts, so that
+    figures such as those indicated by the placeholders in
+    Chapter~7 are automatically generated from the Python code.
+
+    \item Exploring more advanced abstraction techniques, such as adaptive
+    grids or set--propagation methods beyond first--order Jacobian bounds, to
+    reduce conservativeness while keeping computational complexity manageable.
+
+    \item Adding a lightweight front--end that maps restricted
+    natural--language templates to regular languages, which can in turn be
+    compiled into specification automata and handled by the same synthesis
+    back--end.
+\end{itemize}
+
+Symbolic control offers a powerful paradigm for building correct--by--construction
+cyber--physical systems. While computational challenges remain, the formal
+guarantees it provides are invaluable for safety--critical applications. This
+work provides a practical, code--backed proof--of--concept and a solid
+starting point for more advanced abstraction and synthesis techniques.
+
+\end{document}
