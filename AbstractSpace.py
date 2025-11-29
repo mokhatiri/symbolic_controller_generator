@@ -21,6 +21,84 @@ class SymbolicAbstraction:
         self.Discretisation = Discretisation
         self.T = self.compute_symbolic_model()
 
+    def normalize_angular_bounds(self, R):
+        """
+        Normalize angular dimensions to [-pi, pi].
+        
+        For each dimension marked as angular in the discretisation,
+        this method wraps the reachable set bounds to the [-pi, pi] range.
+        
+        Args:
+            R: Reachable set bounds array of shape (2, n_dims) with [min_coords; max_coords]
+        
+        Returns:
+            R with angular dimensions normalized to [-pi, pi]
+        """
+        for dim in self.Discretisation.angular_dims_x:
+            # Normalize both min and max to [-pi, pi]
+            R[0, dim] = np.mod(R[0, dim] + np.pi, 2 * np.pi) - np.pi
+            R[1, dim] = np.mod(R[1, dim] + np.pi, 2 * np.pi) - np.pi
+        
+        return R
+
+    def map_continuous_to_discrete_cells(self, R):
+        """
+        Map continuous reachable set bounds to discrete cell coordinates.
+        
+        Generalizes the repeated computation of mapping continuous intervals to discrete cells.
+        Handles the floor/ceil logic for interval discretization.
+        
+        Args:
+            R: Reachable set with shape (n_dims, 2) where [:, 0] = min, [:, 1] = max
+            
+        Returns:
+            Tuple of (min_successor_idx, max_successor_idx) as discrete state indices
+        """
+        # Convert continuous bounds to cell coordinates
+        min_succ_coord = np.floor(
+            (R[:, 0] - self.Discretisation.X_bounds[:, 0]) / self.Discretisation.dx_cell
+        ).astype(int)
+        max_succ_coord = np.ceil(
+            (R[:, 1] - self.Discretisation.X_bounds[:, 0]) / self.Discretisation.dx_cell
+        ).astype(int) - 1
+        
+        # Convert cell coordinates to discrete state indices
+        min_successor = self.Discretisation.coord_to_idx(min_succ_coord)
+        max_successor = self.Discretisation.coord_to_idx(max_succ_coord)
+        
+        return min_successor, max_successor
+
+    def compute_reachable_set(self, x_center, u_control, w_center):
+        """
+        Compute reachable set bounds from a single point using Jacobian-based interval arithmetic.
+        
+        Generalizes the reachable set computation for code reusability.
+        
+        Args:
+            x_center: Continuous state at cell center
+            u_control: Continuous control input
+            w_center: Continuous disturbance at center
+            
+        Returns:
+            R: Reachable set bounds array of shape (2, n_dims) with [min; max]
+        """
+        # Compute successor state center using continuous dynamics
+        x_succ_center = self.System.f(x_center, u_control, w_center)
+        
+        # Compute uncertainty bounds using Jacobian-based interval arithmetic
+        # Uncertainty from discretization: 0.5 * dx_cell
+        # Uncertainty from disturbance: 0.5 * W_width
+        dx_succ = (0.5 * np.abs(self.System.Jx(u_control)) @ self.Discretisation.dx_cell +
+                   0.5 * np.abs(self.System.Jw(u_control)) @ self.Discretisation.W_width)
+        
+        # Reachable set interval [x_min, x_max]
+        R = np.vstack([
+            x_succ_center - dx_succ,
+            x_succ_center + dx_succ
+        ])
+        
+        return R
+
     def compute_symbolic_model(self):
         """
         Compute the discrete symbolic model (transition system).
@@ -31,7 +109,7 @@ class SymbolicAbstraction:
         2. Applying one step of the continuous dynamics
         3. Computing the reachable set interval using interval arithmetic
         4. Mapping this reachable set back to discrete cells
-        5. Handling wraparound for angular states (theta coordinate)
+        5. Normalizing angular dimensions to [-pi, pi]
         
         Returns:
             T: 3D array of shape (N_x, N_u, 2)
@@ -43,46 +121,23 @@ class SymbolicAbstraction:
         
         # Initialize transition table
         T = np.zeros((self.Discretisation.N_x, self.Discretisation.N_u, 2), dtype=int)
-        trans_count = 0
         
         # Precompute discretized controls
         U_disc = self.Discretisation.discretize_control()
         
-        for state_idx in range(1, self.Discretisation.N_x + 1):
-            # Convert state index to cell coordinates
-            state_coord = self.Discretisation.idx_to_coord(state_idx)
-            # Compute continuous center of the state cell
-            x_center = self.Discretisation.X_bounds[:, 0] + (state_coord - 0.5) * self.Discretisation.dx_cell
+        for state_idx in range(self.Discretisation.N_x):
+            # Get continuous state at cell center
+            x_center = self.Discretisation.idx_to_continuous(state_idx, self.Discretisation.X_bounds, self.Discretisation.dx_cell)
             
-            for control_idx in range(1, self.Discretisation.N_u + 1):
-                # Get the discrete control value
-                u_control = U_disc[:, control_idx - 1]
-
-                # Compute successor state center using continuous dynamics
-                x_succ_center = self.System.f(x_center, u_control, w_center)
+            for control_idx in range(self.Discretisation.N_u):
+                # Get the continuous control value (already at cell center from discretize_control)
+                u_control = U_disc[:, control_idx]
 
                 # Compute reachable set bounds using Jacobian-based interval arithmetic
-                # dx_succ = 0.5 * |J_x| @ dx + 0.5 * |J_w| @ dw
-                dx_succ = (0.5 * np.abs(self.System.Jx(u_control)) @ self.Discretisation.dx_cell + 0.5 * np.abs(self.System.Jw(u_control)) @ self.Discretisation.W_width)
+                R = self.compute_reachable_set(x_center, u_control, w_center)
                 
-                # Reachable set interval [x_min, x_max]
-                R = np.vstack([
-                    x_succ_center - dx_succ, 
-                    x_succ_center + dx_succ
-                ])
-                
-                # Handle angular wraparound for the third dimension (theta)
-                # This accounts for the circular nature of angles in [-pi, pi]
-                if R[0, 2] < -np.pi and R[1, 2] >= -np.pi:
-                    R[0, 2] += 2 * np.pi
-                elif R[0, 2] < -np.pi and R[1, 2] < -np.pi:
-                    R[0, 2] += 2 * np.pi
-                    R[1, 2] += 2 * np.pi
-                elif R[1, 2] > np.pi and R[0, 2] <= np.pi:
-                    R[1, 2] -= 2 * np.pi
-                elif R[1, 2] > np.pi and R[0, 2] > np.pi:
-                    R[1, 2] -= 2 * np.pi
-                    R[0, 2] -= 2 * np.pi
+                # Normalize angular dimensions to [-pi, pi]
+                R = self.normalize_angular_bounds(R)
 
                 R = R.transpose()
                 
@@ -90,19 +145,10 @@ class SymbolicAbstraction:
                 if (np.all(R[:, 0] >= self.Discretisation.X_bounds[:, 0]) and 
                     np.all(R[:, 1] <= self.Discretisation.X_bounds[:, 1])):
                     
-                    # Compute minimum and maximum successor cells
-                    min_succ_coord = np.floor(
-                        (R[:, 0] - self.Discretisation.X_bounds[:, 0]) / self.Discretisation.dx_cell
-                    ).astype(int) + 1
-                    max_succ_coord = np.ceil(
-                        (R[:, 1] - self.Discretisation.X_bounds[:, 0]) / self.Discretisation.dx_cell
-                    ).astype(int)
+                    # Map continuous reachable set back to discrete cell indices
+                    min_successor, max_successor = self.map_continuous_to_discrete_cells(R)
                     
-                    min_successor = self.Discretisation.coord_to_idx(min_succ_coord)
-                    max_successor = self.Discretisation.coord_to_idx(max_succ_coord)
-                    
-                    T[state_idx - 1, control_idx - 1] = [min_successor, max_successor]
-                    trans_count += 1
+                    T[state_idx, control_idx] = [min_successor, max_successor]
         
         return T
     
@@ -132,7 +178,7 @@ class SymbolicAbstraction:
                 max_succ = self.T[state_idx, control_idx, 1]
                 
 
-                rows.append([state_idx + 1, control_idx + 1, min_succ, max_succ])
+                rows.append([state_idx, control_idx, min_succ, max_succ])
         
         df = pd.DataFrame(rows, columns=['State Index', 'Input Index', 'Min Successor', 'Max Successor'])
         df.to_csv("Models/"+fname, index=False)
@@ -149,8 +195,8 @@ class SymbolicAbstraction:
         T = np.zeros((self.Discretisation.N_x, self.Discretisation.N_u, 2), dtype=int)
         
         for _, row in df.iterrows():
-            state_idx = int(row['State Index']) - 1 
-            control_idx = int(row['Input Index']) - 1
+            state_idx = int(row['State Index'])
+            control_idx = int(row['Input Index'])
             min_succ = int(row['Min Successor'])
             max_succ = int(row['Max Successor'])
             

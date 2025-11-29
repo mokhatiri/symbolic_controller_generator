@@ -1,7 +1,7 @@
 import numpy as np
 class SymbolicController:
 
-    def __init__(self, ProductAutomaton):
+    def __init__(self, Automaton):
         """
         Initialize the symbolic controller.
         
@@ -10,11 +10,11 @@ class SymbolicController:
             Labeling: Instance of the labeling function
             Discretisation: Instance of discretisation parameters
         """
-        self.ProductAutomaton = ProductAutomaton
+        self.Automaton = Automaton
         self.V = None, self.h = None
 
 
-    def Start(self, max_iter=10000):
+    def Start(self, is_reachability=True, max_iter=10000):
         """
         Start the controller synthesis process.
         
@@ -24,7 +24,11 @@ class SymbolicController:
         Returns:
             Value function and controller mapping
         """
-        self.V, self.h = self.SynthesisController(max_iter)
+        if is_reachability:
+            self.V, self.h = self.SynthesisReachabilityController(max_iter)
+        else:
+            self.V, self.h = self.SynthesisSafetyController(max_iter)
+
         return self.V, self.h
         
     
@@ -41,16 +45,35 @@ class SymbolicController:
         Returns:
             Tuple of (value function V, controller h)
         """
-        N_states = self.ProductAutomaton.total_sys_states
-        V = np.zeros((N_states, 1))
-        h = -1 * np.ones((N_states, 1))
+        V = np.zeros(self.Automaton.total_states)
+        h = -np.ones(self.Automaton.total_states, dtype=int)
+        R = set()
 
         # apply fixed-point iteration
-
-        
+        # TODO: implement the fixed-point algorithm here
 
         return V, h
 
+    def SynthesisSafetyController(self, max_iter):
+        """
+        Synthesize the safety controller using fixed-point iteration.
+        
+        Implements the fixed-point algorithm to compute the largest set of states
+        from which safety can be guaranteed.
+        
+        Args:
+            max_iter: Maximum number of iterations
+        Returns:
+            Tuple of (value function V, controller h)
+        """
+
+        V = np.zeros(self.Automaton.total_states)
+        h = -np.ones(self.Automaton.total_states, dtype=int)
+
+        # apply fixed-point iteration
+        # TODO
+
+        return V, h
 
     # Saving and loading for time efficiency (avoiding recomputation)
     def Load(self):

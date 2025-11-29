@@ -1,7 +1,7 @@
 import numpy as np
 
 class Abstract:
-    def __init__(self, X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, Automaton_transit, Initial_state, Final_states, angular_dims_x=None):
+    def __init__(self, X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x=None):
         
         self.X_bounds = X_bounds
         self.W_bounds = W_bounds
@@ -11,12 +11,34 @@ class Abstract:
         self.dx_cell = (X_bounds[:, 1] - X_bounds[:, 0]) / cells_per_dim_x
         self.du_cell = (U_bounds[:, 1] - U_bounds[:, 0]) / cells_per_dim_u
         self.dw_cell = (W_bounds[:, 1] - W_bounds[:, 0])
+        self.W_width = W_bounds[:, 1] - W_bounds[:, 0]  # Width of each disturbance dimension
 
         self.M_x = self.build_multiplier_array(cells_per_dim_x)
         self.M_u = self.build_multiplier_array(cells_per_dim_u)
         
         self.N_x = self.M_x[-1]
         self.N_u = self.M_u[-1]
+
+    def continuous_to_discrete(self, continuous_values, bounds, cell_sizes, multiplier_array):
+        """
+        General-purpose method to convert continuous values to discrete indices.
+        
+        This is a generalized version of continuous_to_cell_idx and continuous_control_to_cell_idx.
+        Maps a continuous point in a bounded space to its corresponding cell index in the discretized grid.
+        
+        Args:
+            continuous_values: Continuous coordinates within bounds
+            bounds: [min, max] bounds for each dimension
+            cell_sizes: Cell width for each dimension (e.g., dx_cell or du_cell)
+            multiplier_array: Multiplier array for this space (e.g., M_x or M_u)
+            
+        Returns:
+            Discrete cell indices as array (0-indexed), clipped to valid range
+        """
+        cell_indices = np.floor((continuous_values - bounds[:, 0]) / cell_sizes).astype(int)
+        # Clip to valid range [0, cells_per_dim - 1]
+        max_indices = multiplier_array[1:] - 1
+        return np.clip(cell_indices, 0, max_indices)
 
     def continuous_to_cell_idx(self, continuous_coord):
         """
@@ -31,8 +53,7 @@ class Abstract:
         Returns:
             Cell indices as array (0-indexed)
         """
-        cell_indices = np.floor((continuous_coord - self.X_bounds[:, 0]) / self.dx_cell).astype(int)
-        return np.clip(cell_indices, 0, self.M_x[1:] - 1)
+        return self.continuous_to_discrete(continuous_coord, self.X_bounds, self.dx_cell, self.M_x)
 
     def continuous_control_to_cell_idx(self, continuous_control):
         """
@@ -47,8 +68,40 @@ class Abstract:
         Returns:
             Control cell indices as array (0-indexed)
         """
-        cell_indices = np.floor((continuous_control - self.U_bounds[:, 0]) / self.du_cell).astype(int)
-        return np.clip(cell_indices, 0, self.M_u[1:] - 1)
+        return self.continuous_to_discrete(continuous_control, self.U_bounds, self.du_cell, self.M_u)
+
+    def idx_to_continuous(self, state_idx, bounds, cell_sizes):
+        """
+        Convert a discrete index to continuous coordinates at cell center.
+        
+        General-purpose method to get the continuous center point of a discretized cell.
+        
+        Args:
+            state_idx: Linear discrete index (0-indexed)
+            bounds: [min, max] bounds for the space
+            cell_sizes: Cell width for each dimension
+            
+        Returns:
+            Continuous coordinates at the cell center
+        """
+        state_coord = self.idx_to_coord(state_idx)
+        return bounds[:, 0] + (state_coord + 0.5) * cell_sizes
+
+    def discretize_state(self):
+        """
+        Generate the set of all discrete state space centers.
+        
+        Returns the continuous center point of each discretized state cell.
+        Similar to discretize_control but for states.
+        
+        Returns:
+            X_disc: Matrix of shape (state_dimension, number_of_states)
+                   containing continuous state values at cell centers
+        """
+        X_disc = np.zeros((len(self.X_bounds), self.N_x))
+        for state_idx in range(self.N_x):
+            X_disc[:, state_idx] = self.idx_to_continuous(state_idx, self.X_bounds, self.dx_cell)
+        return X_disc
 
     def idx_to_coord(self, state_idx):
         """
@@ -113,21 +166,26 @@ class Abstract:
         Generate the set of all discrete control inputs.
         
         Creates the control input space by discretizing the continuous control bounds
-        using the provided discretization width and multiplier array.
+        using the provided discretization width. Returns the continuous center point
+        of each discretized cell.
         
         Returns:
             U_disc: Matrix of shape (control_dimension, number_of_control_inputs)
-                   containing all discrete control values
+                   containing continuous control values at cell centers
         """
         U_disc = np.zeros((len(self.U_bounds), self.N_u))
         for control_idx in range(self.N_u):
+            # Convert discrete control index to cell coordinates (0-indexed)
+            control_coord = self.control_idx_to_coord(control_idx)
+            # Compute continuous control at cell center
             U_disc[:, control_idx] = (
                 self.U_bounds[:, 0] + 
-                (self.control_idx_to_coord(control_idx)) * self.du_cell
+                (control_coord + 0.5) * self.du_cell
             )
         
         return U_disc
 
+    @staticmethod
     def build_multiplier_array(cells_per_dim):
         """
         Automatically construct multiplier array from cells per dimension.
