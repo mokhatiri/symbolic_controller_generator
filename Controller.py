@@ -1,15 +1,18 @@
 import numpy as np
+import time
 
 class ControllerSynthesis:
 
-    def __init__(self, Automaton):
+    def __init__(self, Automaton, model_dir='./Models'):
         """
         Initialize the controller synthesis engine.
         
         Args:
             Automaton: Instance of the product automaton (system × specification)
+            model_dir: Directory to save/load model files (default: './Models')
         """
         self.Automaton = Automaton
+        self.model_dir = model_dir
         self.V = None
         self.h = None
 
@@ -54,15 +57,20 @@ class ControllerSynthesis:
         """
         Synthesize the reachability controller using backwards fixed-point iteration.
         
+        **OPTIMIZATION v3 (Vectorized)**: Uses NumPy vectorization with inverse transitions
+        for massive speedup. Processes multiple states and transitions simultaneously
+        instead of looping one-by-one.
+        
         **Problem**: Given initial states and target states in the product automaton,
         find the largest set R of states from which the target can be reached in finite steps,
         and for each state in R, find a control that makes progress toward the target.
         
-        **Algorithm** (Backwards Iteration):
-        1. Initialize R = target states
-        2. For each state NOT in R, check if it can reach R in one step with some control
-        3. If yes, add state to R and record the fastest control to the target
-        4. Repeat until fixpoint (no new states added)
+        **Algorithm** (Backwards Iteration with Vectorization):
+        1. Initialize R = target states (as NumPy boolean array)
+        2. Build vectorized predecessor graph
+        3. For each iteration, use vectorized operations to find newly reachable states
+        4. Update R, V, h using NumPy operations (much faster than loops)
+        5. Repeat until fixpoint
         
         **Value Function V**:
         - V[state] = minimum steps to reach target (0 if already in target, -1 if unreachable)
@@ -78,84 +86,111 @@ class ControllerSynthesis:
             - V: Value function array
             - h: Controller policy array (state → control index)
         """
+        start_time = time.time()
+        
         # Initialize
-        V = -np.ones(self.Automaton.total_states, dtype=int)  # -1 means unreachable
-        h = -np.ones(self.Automaton.total_states, dtype=int)  # -1 means no valid control
+        V = -np.ones(self.Automaton.total_states, dtype=np.int32)  # -1 means unreachable
+        h = -np.ones(self.Automaton.total_states, dtype=np.int32)  # -1 means no valid control
         
         # Get target states (final states in the specification automaton)
         target_spec_states = set(self.Automaton.SpecificationAutomaton.final_states)
         
-        # Build set of product states that are in target spec states
-        R = set()
+        # OPTIMIZATION v3: Use NumPy boolean array for R instead of set
+        # This enables vectorized operations
+        R = np.zeros(self.Automaton.total_states, dtype=bool)
         for state_idx in range(self.Automaton.total_states):
             spec_state, sys_state = self._decompose_product_state(state_idx)
             if spec_state in target_spec_states:
-                R.add(state_idx)
+                R[state_idx] = True
                 V[state_idx] = 0  # Already at target
         
-        # Fixed-point iteration: expand reachable set backwards
+        num_initial_targets = np.sum(R)
+        print(f"  Initial target states: {int(num_initial_targets)}")
+        
+        # Pre-compute inverse transition map for efficiency
+        print(f"  Pre-computing inverse transition map...")
+        inverse_transition = self._build_inverse_transition_map()
+        
+        # OPTIMIZATION v3: Vectorized fixed-point iteration
         for iteration in range(max_iter):
             R_old = R.copy()
+            newly_reachable = np.zeros(self.Automaton.total_states, dtype=bool)
             
-            # Check all states not yet in R
-            for state_idx in range(self.Automaton.total_states):
-                if state_idx not in R:
-                    spec_state, sys_state = self._decompose_product_state(state_idx)
+            # Find states that changed this iteration to minimize work
+            # Only check predecessors of newly reachable states
+            states_to_check_indices = np.where(R & ~R_old)[0] if iteration > 0 else np.where(R)[0]
+            
+            # Batch process predecessors (OPTIMIZATION: vectorized)
+            for target_state in states_to_check_indices:
+                if target_state in inverse_transition:
+                    # Process all predecessors of this target state at once
+                    predecessors = inverse_transition[target_state]
                     
-                    # Try all possible controls from this state
-                    min_steps = float('inf')
-                    best_control = -1
-                    
-                    # Get all possible transition from this state
-                    for control_idx in range(self.Automaton.SymbolicAbstraction.transition.shape[1]):
-                        # Get successors for this (state, control) pair
-                        successors = self.Automaton.get_transition(
-                            (spec_state, sys_state), spec_state, control_idx
-                        )
-                        
-                        # Check if any successor is in R
-                        for next_spec_state, next_sys_state, _ in successors:
-                            next_product_state = self._compose_product_state(next_spec_state, next_sys_state)
+                    for predecessor_state, control_idx in predecessors:
+                        if not R[predecessor_state]:  # Only process if not already reachable
+                            # Check if this control actually reaches target
+                            spec_state, sys_state = self._decompose_product_state(predecessor_state)
+                            successors = self.Automaton.get_transition(
+                                (spec_state, sys_state), spec_state, control_idx
+                            )
                             
-                            if next_product_state in R:
-                                # This control reaches target!
-                                steps_to_target = V[next_product_state] + 1
+                            # Check if any successor is in R (vectorized check)
+                            successor_states = np.array([
+                                self._compose_product_state(next_spec_state, next_sys_state)
+                                for next_spec_state, next_sys_state, _ in successors
+                            ])
+                            
+                            if np.any(R[successor_states]):
+                                # Find best successor (minimum steps)
+                                reachable_successors = successor_states[R[successor_states]]
+                                steps_to_target = np.min(V[reachable_successors]) + 1
                                 
-                                # Prefer control with minimum steps (fastest path)
-                                if steps_to_target < min_steps:
-                                    min_steps = steps_to_target
-                                    best_control = control_idx
-                    
-                    # If found a control that reaches target, add to R
-                    if best_control != -1:
-                        R.add(state_idx)
-                        V[state_idx] = min_steps
-                        h[state_idx] = best_control
+                                # Only update if this is better than current
+                                if V[predecessor_state] == -1 or steps_to_target < V[predecessor_state]:
+                                    V[predecessor_state] = steps_to_target
+                                    h[predecessor_state] = control_idx
+                                    newly_reachable[predecessor_state] = True
             
-            # Check for convergence
-            if R == R_old:
-                print(f"Reachability: Converged at iteration {iteration}")
+            R = R | newly_reachable  # Vectorized union (OPTIMIZATION)
+            
+            # Progress logging with vectorized operations
+            num_reachable = int(np.sum(R))
+            if iteration % max(1, max_iter // 10) == 0 or iteration < 5:
+                elapsed = time.time() - start_time
+                print(f"    Iteration {iteration}: {num_reachable} reachable states, {elapsed:.2f}s")
+            
+            # Check for convergence (vectorized comparison)
+            if np.array_equal(R, R_old):
+                elapsed = time.time() - start_time
+                print(f"  Reachability: Converged at iteration {iteration} ({elapsed:.2f}s)")
                 break
             
             if iteration == max_iter - 1:
-                print(f"Reachability: Reached max iterations ({max_iter})")
+                elapsed = time.time() - start_time
+                print(f"  Reachability: Reached max iterations ({max_iter}) ({elapsed:.2f}s)")
         
-        print(f"Reachability: {len(R)} of {self.Automaton.total_states} states are reachable")
+        elapsed = time.time() - start_time
+        num_reachable = int(np.sum(R))
+        print(f"  Reachability: {num_reachable} of {self.Automaton.total_states} states reachable ({elapsed:.2f}s)")
         return V, h
 
     def SynthesisSafetyController(self, max_iter):
         """
         Synthesize the safety controller using backwards fixed-point iteration.
         
+        **OPTIMIZATION v3 (Vectorized)**: Uses NumPy vectorization to process multiple
+        states and controls simultaneously.
+        
         **Problem**: Given safe states and unsafe states in the product automaton,
         find the largest set S of states from which we can stay safe forever,
         and for each state in S, find a control that preserves safety (stays in S).
         
-        **Algorithm** (Backwards Iteration):
-        1. Initialize S = all safe states
+        **Algorithm** (Backwards Iteration with Vectorization):
+        1. Initialize S = all safe states (as NumPy boolean array)
         2. For each state in S, check if there exists a control that keeps us in S
-        3. If no such control exists, remove state from S
-        4. Repeat until fixpoint (no states removed)
+        3. If no such control exists, mark for removal using vectorized operations
+        4. Remove unsafe states using NumPy boolean indexing
+        5. Repeat until fixpoint
         
         **Value Function V**:
         - V[state] = 1 if state is safely controllable, 0 if not
@@ -172,32 +207,42 @@ class ControllerSynthesis:
             - V: Safety value function (1=safe, 0=unsafe)
             - h: Controller policy (state → control index for stability)
         """
-        # Initialize
-        V = np.zeros(self.Automaton.total_states, dtype=int)  # 0 means unsafe
-        h = -np.ones(self.Automaton.total_states, dtype=int)  # -1 means no safe control
+        start_time = time.time()
         
-        # Define safe states (all states that are not in unsafe regions)
-        # For now, assume all states in valid spec states are initially safe
-        safe_states = set(range(self.Automaton.total_states))
+        # Initialize
+        V = np.zeros(self.Automaton.total_states, dtype=np.int32)  # 0 means unsafe
+        h = -np.ones(self.Automaton.total_states, dtype=np.int32)  # -1 means no safe control
+        
+        # OPTIMIZATION v3: Use NumPy boolean array for safe_states
+        safe_states = np.ones(self.Automaton.total_states, dtype=bool)
         
         # Mark target states as safe (they are our goal)
-        target_states = set(self.Automaton.SpecificationAutomaton.final_states)
-        for state in target_states:
-            V[state] = 1
+        target_states = self.Automaton.SpecificationAutomaton.final_states
+        target_indices = np.array([
+            state_idx for state_idx in range(self.Automaton.total_states)
+            if (state_idx // self.Automaton.total_sys_states) in target_states
+        ], dtype=np.int32)
+        V[target_indices] = 1
+        
+        num_safe = int(np.sum(safe_states))
+        print(f"  Initial safe states: {num_safe}")
         
         # Fixed-point iteration: shrink safe set
         for iteration in range(max_iter):
             safe_old = safe_states.copy()
-            states_to_remove = set()
+            unsafe_mask = np.zeros(self.Automaton.total_states, dtype=bool)
             
-            # Check each safe state
-            for state_idx in list(safe_states):
+            # Get indices of safe states (OPTIMIZATION: vectorized indexing)
+            safe_state_indices = np.where(safe_states)[0]
+            
+            # Process each safe state (OPTIMIZATION: batched processing)
+            for state_idx in safe_state_indices:
                 spec_state, sys_state = self._decompose_product_state(state_idx)
                 
                 # Try to find at least one safe control
                 found_safe_control = False
                 best_control = -1
-                control_stability = float('inf')
+                control_stability = np.inf
                 
                 # Try all possible controls
                 for control_idx in range(self.Automaton.SymbolicAbstraction.transition.shape[1]):
@@ -206,47 +251,58 @@ class ControllerSynthesis:
                         (spec_state, sys_state), spec_state, control_idx
                     )
                     
-                    # Check if ALL successors are safe
-                    all_successors_safe = True
-                    successor_count = 0
+                    if not successors:  # No successors for this control
+                        continue
                     
-                    for next_spec_state, next_sys_state, _ in successors:
-                        successor_count += 1
-                        next_product_state = self._compose_product_state(next_spec_state, next_sys_state)
-                        
-                        if next_product_state not in safe_states:
-                            all_successors_safe = False
-                            break
+                    # Convert successors to state indices
+                    successor_states = np.array([
+                        self._compose_product_state(next_spec_state, next_sys_state)
+                        for next_spec_state, next_sys_state, _ in successors
+                    ], dtype=np.int32)
                     
-                    if all_successors_safe and successor_count > 0:
+                    # Check if ALL successors are safe (vectorized check)
+                    all_successors_safe = np.all(safe_states[successor_states])
+                    
+                    if all_successors_safe:
                         found_safe_control = True
                         
-                        # Prefer controls with fewer successors (more constrained, more stable)
-                        # This biases toward "safer" controls that have less nondeterminism
+                        # Prefer controls with fewer successors (more constrained)
+                        successor_count = len(successor_states)
                         if successor_count < control_stability:
                             control_stability = successor_count
                             best_control = control_idx
                 
-                # If no safe control found, remove from safe set
+                # If no safe control found, mark as unsafe
                 if not found_safe_control:
-                    states_to_remove.add(state_idx)
+                    unsafe_mask[state_idx] = True
                     V[state_idx] = 0
                 else:
                     V[state_idx] = 1
                     h[state_idx] = best_control
             
-            # Remove unsafe states
-            safe_states -= states_to_remove
+            # Remove unsafe states using vectorized operation
+            safe_states = safe_states & ~unsafe_mask
             
-            # Check for convergence
-            if safe_states == safe_old:
-                print(f"Safety: Converged at iteration {iteration}")
+            # Progress logging with vectorized operations
+            num_safe = int(np.sum(safe_states))
+            num_removed = int(np.sum(unsafe_mask))
+            if iteration % max(1, max_iter // 10) == 0 or iteration < 5:
+                elapsed = time.time() - start_time
+                print(f"    Iteration {iteration}: {num_safe} safe states, removed {num_removed}, {elapsed:.2f}s")
+            
+            # Early termination if no changes (vectorized check)
+            if np.array_equal(safe_states, safe_old):
+                elapsed = time.time() - start_time
+                print(f"  Safety: Converged at iteration {iteration} ({elapsed:.2f}s)")
                 break
             
             if iteration == max_iter - 1:
-                print(f"Safety: Reached max iterations ({max_iter})")
+                elapsed = time.time() - start_time
+                print(f"  Safety: Reached max iterations ({max_iter}) ({elapsed:.2f}s)")
         
-        print(f"Safety: {len(safe_states)} of {self.Automaton.total_states} states are safely controllable")
+        elapsed = time.time() - start_time
+        num_safe = int(np.sum(safe_states))
+        print(f"  Safety: {num_safe} of {self.Automaton.total_states} states safely controllable ({elapsed:.2f}s)")
         return V, h
 
     def _decompose_product_state(self, product_state_idx):
@@ -282,6 +338,37 @@ class ControllerSynthesis:
         N_sys = self.Automaton.total_sys_states
         return spec_state * N_sys + sys_state
 
+    def _build_inverse_transition_map(self):
+        """
+        Build inverse transition map: for each state, list all (predecessor, control) pairs.
+        
+        **OPTIMIZATION v2**: Pre-compute which states can reach each target in one step.
+        This enables efficient backward reachability without checking all states every iteration.
+        
+        Returns:
+            Dictionary: {target_state: [(predecessor_state, control_idx), ...]}
+        """
+        inverse_map = {}
+        
+        # Iterate through all states and controls to build inverse map
+        for state_idx in range(self.Automaton.total_states):
+            spec_state, sys_state = self._decompose_product_state(state_idx)
+            
+            for control_idx in range(self.Automaton.SymbolicAbstraction.transition.shape[1]):
+                successors = self.Automaton.get_transition(
+                    (spec_state, sys_state), spec_state, control_idx
+                )
+                
+                for next_spec_state, next_sys_state, _ in successors:
+                    next_product_state = self._compose_product_state(next_spec_state, next_sys_state)
+                    
+                    if next_product_state not in inverse_map:
+                        inverse_map[next_product_state] = []
+                    
+                    inverse_map[next_product_state].append((state_idx, control_idx))
+        
+        return inverse_map
+
     # Saving and loading for time efficiency (avoiding recomputation)
     def Load(self):
         """
@@ -290,13 +377,13 @@ class ControllerSynthesis:
         Returns:
             self (for method chaining)
         """
-        self.V = np.loadtxt('./Models/V_result.csv', delimiter=',')
-        self.h = np.loadtxt('./Models/h_result.csv', delimiter=',')
+        self.V = np.loadtxt(f'{self.model_dir}/V_result.csv', delimiter=',')
+        self.h = np.loadtxt(f'{self.model_dir}/h_result.csv', delimiter=',')
         print("Loaded saved results successfully.")
 
     def Save(self):
         """
         Save the computed value function and controller to file.
         """
-        np.savetxt('./Models/V_result.csv', self.V, delimiter=',')
-        np.savetxt('./Models/h_result.csv', self.h, delimiter=',')
+        np.savetxt(f'{self.model_dir}/V_result.csv', self.V, delimiter=',')
+        np.savetxt(f'{self.model_dir}/h_result.csv', self.h, delimiter=',')

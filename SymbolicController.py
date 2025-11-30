@@ -7,13 +7,17 @@ import Controller
 
 class SymbolicController:
  
-    def __init__(self, f, Jx, Jw, X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x, SpecificationAutomaton, relation, sets):
+    def __init__(self, f, Jx, Jw, X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x, SpecificationAutomaton, relation, sets, model_dir='./Models'):
         """
         Initialize the symbolic controller.
+        
+        Args:
+            model_dir: Directory to save/load model files (default: './Models')
         """
         self.u = None
         self.context = SpecificationAutomaton.initial_state # is an Automaton
         self.x = None
+        self.model_dir = model_dir
 
         self.Discretisation = Discretisation.Discretisation(X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x)
         self.System = System.System(f, Jx, Jw)
@@ -28,11 +32,11 @@ class SymbolicController:
         abstraction = AbstractSpace.AbstractSpace(self.System, self.Discretisation)
         automaton = ProdAutomaton.ProdAutomaton(SpecificationAutomaton, labeling, abstraction)
 
-        self.Controller = Controller.ControllerSynthesis(automaton)
+        self.Controller = Controller.ControllerSynthesis(automaton, model_dir=model_dir)
         self.V = None
         self.h = None
 
-    def start(self, x0, context, is_reachability=True, max_iter=10000):
+    def start(self, is_reachability=True, max_iter=10000):
         """
         Start the controller with the initial state and context.
 
@@ -40,11 +44,39 @@ class SymbolicController:
             x0: Initial state
             context: Context information
         """
+        self.V, self.h = self.Controller.Start(is_reachability, max_iter)
+
+
+    def goto(self, x0):
+        """
+        Set the continuous state x.
+                
+        Args:
+            x0: continuous state
+        """
         self.x = x0
-        self.u = None
+
+    def setContext(self, context):
+        """
+        Set the context of the controller.
+
+        Args:
+            context: New context
+        """
         self.context = context
 
-        self.V, self.h = self.Controller.Start(is_reachability, max_iter)
+    def stepfrom(self, x0, context, disturbance):
+        """
+        Advance the controller by one time step from a given state and context.
+
+        Args:
+            x0: Continuous state
+            context: Context information
+        """
+        self.goto(x0)
+        self.setContext(context)
+
+        return self.step(disturbance)
 
     def step(self, disturbance):
         """
@@ -77,7 +109,7 @@ class SymbolicController:
                                                                    self.Discretisation.cells_per_dim_u)
         else:
             control_input = None
-            
+
         self.u = control_input
 
         return control_input
