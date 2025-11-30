@@ -1,5 +1,6 @@
 import numpy as np
 import time
+import os
 
 class ControllerSynthesis:
 
@@ -107,9 +108,9 @@ class ControllerSynthesis:
         num_initial_targets = np.sum(R)
         print(f"  Initial target states: {int(num_initial_targets)}")
         
-        # Pre-compute inverse transition map for efficiency
-        print(f"  Pre-computing inverse transition map...")
-        inverse_transition = self._build_inverse_transition_map()
+        # Use pre-computed inverse transition map from AbstractSpace
+        print(f"  Using pre-computed inverse transition map...")
+        inverse_transition = self.Automaton.SymbolicAbstraction.inverse_transition
         
         # OPTIMIZATION v3: Vectorized fixed-point iteration
         for iteration in range(max_iter):
@@ -340,34 +341,15 @@ class ControllerSynthesis:
 
     def _build_inverse_transition_map(self):
         """
-        Build inverse transition map: for each state, list all (predecessor, control) pairs.
+        DEPRECATED: Inverse transition map is now pre-computed in AbstractSpace.
         
-        **OPTIMIZATION v2**: Pre-compute which states can reach each target in one step.
-        This enables efficient backward reachability without checking all states every iteration.
-        
-        Returns:
-            Dictionary: {target_state: [(predecessor_state, control_idx), ...]}
+        This method is kept for backward compatibility but should not be used.
+        Use: self.Automaton.SymbolicAbstraction.inverse_transition instead
         """
-        inverse_map = {}
-        
-        # Iterate through all states and controls to build inverse map
-        for state_idx in range(self.Automaton.total_states):
-            spec_state, sys_state = self._decompose_product_state(state_idx)
-            
-            for control_idx in range(self.Automaton.SymbolicAbstraction.transition.shape[1]):
-                successors = self.Automaton.get_transition(
-                    (spec_state, sys_state), spec_state, control_idx
-                )
-                
-                for next_spec_state, next_sys_state, _ in successors:
-                    next_product_state = self._compose_product_state(next_spec_state, next_sys_state)
-                    
-                    if next_product_state not in inverse_map:
-                        inverse_map[next_product_state] = []
-                    
-                    inverse_map[next_product_state].append((state_idx, control_idx))
-        
-        return inverse_map
+        raise NotImplementedError(
+            "Inverse transition map is now pre-computed in AbstractSpace. "
+            "Use: self.Automaton.SymbolicAbstraction.inverse_transition"
+        )
 
     # Saving and loading for time efficiency (avoiding recomputation)
     def Load(self):
@@ -384,6 +366,10 @@ class ControllerSynthesis:
     def Save(self):
         """
         Save the computed value function and controller to file.
+        Automatically creates the model directory if it doesn't exist.
         """
+        # Ensure directory exists before saving
+        os.makedirs(self.model_dir, exist_ok=True)
+        
         np.savetxt(f'{self.model_dir}/V_result.csv', self.V, delimiter=',')
         np.savetxt(f'{self.model_dir}/h_result.csv', self.h, delimiter=',')

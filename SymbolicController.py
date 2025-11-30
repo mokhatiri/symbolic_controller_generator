@@ -29,7 +29,7 @@ class SymbolicController:
         # Pass state indices (0 to N_x-1) instead of continuous state values
         state_indices = list(range(self.Discretisation.N_x))
         labeling = Labeling.Labeling(state_indices, actual_relation, sets)
-        abstraction = AbstractSpace.AbstractSpace(self.System, self.Discretisation)
+        abstraction = AbstractSpace.AbstractSpace(self.System, self.Discretisation, model_dir=model_dir)
         automaton = ProdAutomaton.ProdAutomaton(SpecificationAutomaton, labeling, abstraction)
 
         self.Controller = Controller.ControllerSynthesis(automaton, model_dir=model_dir)
