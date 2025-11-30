@@ -1,21 +1,25 @@
 import numpy as np
 import time
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 class ControllerSynthesis:
 
-    def __init__(self, Automaton, model_dir='./Models'):
+    def __init__(self, Automaton, model_dir='./Models', num_threads=None):
         """
         Initialize the controller synthesis engine.
         
         Args:
             Automaton: Instance of the product automaton (system × specification)
             model_dir: Directory to save/load model files (default: './Models')
+            num_threads: Number of CPU threads to use for parallel synthesis (default: None = auto-detect)
         """
         self.Automaton = Automaton
         self.model_dir = model_dir
         self.V = None
         self.h = None
+        self.num_threads = num_threads or os.cpu_count() or 4  # Default to CPU count or 4
 
 
     def Start(self, is_reachability=True, max_iter=10000):
@@ -58,20 +62,20 @@ class ControllerSynthesis:
         """
         Synthesize the reachability controller using backwards fixed-point iteration.
         
-        **OPTIMIZATION v3 (Vectorized)**: Uses NumPy vectorization with inverse transitions
-        for massive speedup. Processes multiple states and transitions simultaneously
-        instead of looping one-by-one.
+        **OPTIMIZATION v4 (Multi-threaded Vectorized)**: Uses ThreadPoolExecutor for parallel
+        processing of state transitions with NumPy vectorization.
         
         **Problem**: Given initial states and target states in the product automaton,
         find the largest set R of states from which the target can be reached in finite steps,
         and for each state in R, find a control that makes progress toward the target.
         
-        **Algorithm** (Backwards Iteration with Vectorization):
+        **Algorithm** (Backwards Iteration with Multi-threading):
         1. Initialize R = target states (as NumPy boolean array)
         2. Build vectorized predecessor graph
-        3. For each iteration, use vectorized operations to find newly reachable states
-        4. Update R, V, h using NumPy operations (much faster than loops)
-        5. Repeat until fixpoint
+        3. For each iteration, use ThreadPoolExecutor to process states in parallel
+        4. Each thread processes a batch of states using vectorized operations
+        5. Combine results with thread-safe operations
+        6. Repeat until fixpoint
         
         **Value Function V**:
         - V[state] = minimum steps to reach target (0 if already in target, -1 if unreachable)
@@ -96,7 +100,7 @@ class ControllerSynthesis:
         # Get target states (final states in the specification automaton)
         target_spec_states = set(self.Automaton.SpecificationAutomaton.final_states)
         
-        # OPTIMIZATION v3: Use NumPy boolean array for R instead of set
+        # OPTIMIZATION v4: Use NumPy boolean array for R instead of set
         # This enables vectorized operations
         R = np.zeros(self.Automaton.total_states, dtype=bool)
         for state_idx in range(self.Automaton.total_states):
@@ -107,24 +111,22 @@ class ControllerSynthesis:
         
         num_initial_targets = np.sum(R)
         print(f"  Initial target states: {int(num_initial_targets)}")
+        print(f"  Using {self.num_threads} CPU threads for parallel synthesis...")
         
         # Use pre-computed inverse transition map from AbstractSpace
         print(f"  Using pre-computed inverse transition map...")
         inverse_transition = self.Automaton.SymbolicAbstraction.inverse_transition
         
-        # OPTIMIZATION v3: Vectorized fixed-point iteration
-        for iteration in range(max_iter):
-            R_old = R.copy()
-            newly_reachable = np.zeros(self.Automaton.total_states, dtype=bool)
+        # Thread-safe locks for shared state updates
+        V_lock = Lock()
+        h_lock = Lock()
+        
+        def process_state_batch(states_batch):
+            """Process a batch of states in parallel and return updates"""
+            local_updates = []
             
-            # Find states that changed this iteration to minimize work
-            # Only check predecessors of newly reachable states
-            states_to_check_indices = np.where(R & ~R_old)[0] if iteration > 0 else np.where(R)[0]
-            
-            # Batch process predecessors (OPTIMIZATION: vectorized)
-            for target_state in states_to_check_indices:
+            for target_state in states_batch:
                 if target_state in inverse_transition:
-                    # Process all predecessors of this target state at once
                     predecessors = inverse_transition[target_state]
                     
                     for predecessor_state, control_idx in predecessors:
@@ -136,21 +138,52 @@ class ControllerSynthesis:
                             )
                             
                             # Check if any successor is in R (vectorized check)
-                            successor_states = np.array([
-                                self._compose_product_state(next_spec_state, next_sys_state)
-                                for next_spec_state, next_sys_state, _ in successors
-                            ])
-                            
-                            if np.any(R[successor_states]):
-                                # Find best successor (minimum steps)
-                                reachable_successors = successor_states[R[successor_states]]
-                                steps_to_target = np.min(V[reachable_successors]) + 1
+                            if successors:
+                                successor_states = np.array([
+                                    self._compose_product_state(next_spec_state, next_sys_state)
+                                    for next_spec_state, next_sys_state, _ in successors
+                                ])
                                 
-                                # Only update if this is better than current
-                                if V[predecessor_state] == -1 or steps_to_target < V[predecessor_state]:
-                                    V[predecessor_state] = steps_to_target
-                                    h[predecessor_state] = control_idx
-                                    newly_reachable[predecessor_state] = True
+                                if np.any(R[successor_states]):
+                                    # Find best successor (minimum steps)
+                                    reachable_successors = successor_states[R[successor_states]]
+                                    steps_to_target = np.min(V[reachable_successors]) + 1
+                                    
+                                    # Only update if this is better than current
+                                    if V[predecessor_state] == -1 or steps_to_target < V[predecessor_state]:
+                                        local_updates.append((predecessor_state, steps_to_target, control_idx))
+            
+            return local_updates
+        
+        # OPTIMIZATION v4: Vectorized fixed-point iteration with multi-threading
+        for iteration in range(max_iter):
+            R_old = R.copy()
+            newly_reachable = np.zeros(self.Automaton.total_states, dtype=bool)
+            
+            # Find states that changed this iteration to minimize work
+            # Only check predecessors of newly reachable states
+            states_to_check_indices = np.where(R & ~R_old)[0] if iteration > 0 else np.where(R)[0]
+            
+            if len(states_to_check_indices) > 0:
+                # Split work into batches for multi-threading
+                batch_size = max(1, len(states_to_check_indices) // (self.num_threads * 4))
+                batches = [states_to_check_indices[i:i+batch_size] 
+                          for i in range(0, len(states_to_check_indices), batch_size)]
+                
+                # Process batches in parallel
+                all_updates = []
+                with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+                    futures = [executor.submit(process_state_batch, batch) for batch in batches]
+                    for future in as_completed(futures):
+                        all_updates.extend(future.result())
+                
+                # Apply all updates with thread-safe locks
+                for predecessor_state, steps_to_target, control_idx in all_updates:
+                    with V_lock:
+                        if V[predecessor_state] == -1 or steps_to_target < V[predecessor_state]:
+                            V[predecessor_state] = steps_to_target
+                            h[predecessor_state] = control_idx
+                            newly_reachable[predecessor_state] = True
             
             R = R | newly_reachable  # Vectorized union (OPTIMIZATION)
             
@@ -179,19 +212,20 @@ class ControllerSynthesis:
         """
         Synthesize the safety controller using backwards fixed-point iteration.
         
-        **OPTIMIZATION v3 (Vectorized)**: Uses NumPy vectorization to process multiple
-        states and controls simultaneously.
+        **OPTIMIZATION v4 (Multi-threaded Vectorized)**: Uses ThreadPoolExecutor for parallel
+        processing of state transitions with NumPy vectorization.
         
         **Problem**: Given safe states and unsafe states in the product automaton,
         find the largest set S of states from which we can stay safe forever,
         and for each state in S, find a control that preserves safety (stays in S).
         
-        **Algorithm** (Backwards Iteration with Vectorization):
+        **Algorithm** (Backwards Iteration with Multi-threading):
         1. Initialize S = all safe states (as NumPy boolean array)
         2. For each state in S, check if there exists a control that keeps us in S
-        3. If no such control exists, mark for removal using vectorized operations
-        4. Remove unsafe states using NumPy boolean indexing
-        5. Repeat until fixpoint
+        3. Use ThreadPoolExecutor to process multiple states in parallel
+        4. If no such control exists, mark for removal using vectorized operations
+        5. Remove unsafe states using NumPy boolean indexing
+        6. Repeat until fixpoint
         
         **Value Function V**:
         - V[state] = 1 if state is safely controllable, 0 if not
@@ -214,7 +248,7 @@ class ControllerSynthesis:
         V = np.zeros(self.Automaton.total_states, dtype=np.int32)  # 0 means unsafe
         h = -np.ones(self.Automaton.total_states, dtype=np.int32)  # -1 means no safe control
         
-        # OPTIMIZATION v3: Use NumPy boolean array for safe_states
+        # OPTIMIZATION v4: Use NumPy boolean array for safe_states
         safe_states = np.ones(self.Automaton.total_states, dtype=bool)
         
         # Mark target states as safe (they are our goal)
@@ -227,17 +261,13 @@ class ControllerSynthesis:
         
         num_safe = int(np.sum(safe_states))
         print(f"  Initial safe states: {num_safe}")
+        print(f"  Using {self.num_threads} CPU threads for parallel synthesis...")
         
-        # Fixed-point iteration: shrink safe set
-        for iteration in range(max_iter):
-            safe_old = safe_states.copy()
-            unsafe_mask = np.zeros(self.Automaton.total_states, dtype=bool)
+        def process_safe_states_batch(state_indices_batch):
+            """Process a batch of safe states in parallel"""
+            local_updates = []
             
-            # Get indices of safe states (OPTIMIZATION: vectorized indexing)
-            safe_state_indices = np.where(safe_states)[0]
-            
-            # Process each safe state (OPTIMIZATION: batched processing)
-            for state_idx in safe_state_indices:
+            for state_idx in state_indices_batch:
                 spec_state, sys_state = self._decompose_product_state(state_idx)
                 
                 # Try to find at least one safe control
@@ -275,18 +305,48 @@ class ControllerSynthesis:
                 
                 # If no safe control found, mark as unsafe
                 if not found_safe_control:
-                    unsafe_mask[state_idx] = True
-                    V[state_idx] = 0
+                    local_updates.append((state_idx, False, -1))
                 else:
-                    V[state_idx] = 1
-                    h[state_idx] = best_control
+                    local_updates.append((state_idx, True, best_control))
             
-            # Remove unsafe states using vectorized operation
-            safe_states = safe_states & ~unsafe_mask
+            return local_updates
+        
+        # Fixed-point iteration: shrink safe set
+        for iteration in range(max_iter):
+            safe_old = safe_states.copy()
+            
+            # Get indices of safe states (OPTIMIZATION: vectorized indexing)
+            safe_state_indices = np.where(safe_states)[0]
+            
+            if len(safe_state_indices) > 0:
+                # Split work into batches for multi-threading
+                batch_size = max(1, len(safe_state_indices) // (self.num_threads * 4))
+                batches = [safe_state_indices[i:i+batch_size] 
+                          for i in range(0, len(safe_state_indices), batch_size)]
+                
+                # Process batches in parallel
+                all_updates = []
+                with ThreadPoolExecutor(max_workers=self.num_threads) as executor:
+                    futures = [executor.submit(process_safe_states_batch, batch) for batch in batches]
+                    for future in as_completed(futures):
+                        all_updates.extend(future.result())
+                
+                # Apply updates
+                unsafe_mask = np.zeros(self.Automaton.total_states, dtype=bool)
+                for state_idx, is_safe, best_control in all_updates:
+                    if not is_safe:
+                        unsafe_mask[state_idx] = True
+                        V[state_idx] = 0
+                    else:
+                        V[state_idx] = 1
+                        h[state_idx] = best_control
+                
+                # Remove unsafe states using vectorized operation
+                safe_states = safe_states & ~unsafe_mask
             
             # Progress logging with vectorized operations
             num_safe = int(np.sum(safe_states))
-            num_removed = int(np.sum(unsafe_mask))
+            num_removed = int(np.sum(~safe_old & safe_states == False))
             if iteration % max(1, max_iter // 10) == 0 or iteration < 5:
                 elapsed = time.time() - start_time
                 print(f"    Iteration {iteration}: {num_safe} safe states, removed {num_removed}, {elapsed:.2f}s")
