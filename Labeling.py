@@ -10,8 +10,14 @@ class Labeling():
         for state in self.states:
             for label, label_set in self.sets.items():
                 labeling_dict[state] = []
-                if self.relation(state, label_set):
-                    labeling_dict[state].append(label)
+                temp = []
+                def_temp = []
+                if label_set is None:
+                    temp.append(label)
+                else:
+                    if self.relation(state, label_set):
+                        def_temp.append(label)
+                labeling_dict[state] = def_temp if def_temp != [] else temp
 
         return labeling_dict
     
