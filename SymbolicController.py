@@ -13,15 +13,18 @@ class SymbolicController:
         """
         self.u = None
         self.context = SpecificationAutomaton.initial_state # is an Automaton
+        self.x = None
 
-        self.Discretisation = Discretisation(X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x)
-        self.System = System(f, Jx, Jw)
+        self.Discretisation = Discretisation.Discretisation(X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x)
+        self.System = System.System(f, Jx, Jw)
 
-        labeling = Labeling(states, relation, sets)
-        abstraction = AbstractSpace(self.System, self.Discretisation)
-        Automaton = ProdAutomaton(abstraction, SpecificationAutomaton, labeling)
+        labeling = Labeling.Labeling(states, relation, sets)
+        abstraction = AbstractSpace.AbstractSpace(self.System, self.Discretisation)
+        automaton = ProdAutomaton.ProdAutomaton(abstraction, SpecificationAutomaton, labeling)
 
-        self.Controller = Controller(Automaton)
+        self.Controller = Controller.ControllerSynthesis(automaton)
+        self.V = None
+        self.h = None
 
     def start(self, x0, context, is_reachability=True, max_iter=10000):
         """
@@ -50,18 +53,25 @@ class SymbolicController:
 
         # step 1: x+ = f(x, u, disturbance)
         if self.u is not None:
-            self.x = self.step(self.u, disturbance)
+            self.x = self.System.step(self.u, disturbance)
 
         # step 2: get discrete state index
-        state_idx = self.Discretisation.coord_to_idx(self.Discretisation.continuous_to_cell_idx(self.System.curr_x))
+        continuous_cell_idx = self.Discretisation.continuous_to_cell_idx(self.x)
+        state_idx = self.Discretisation.coord_to_idx(continuous_cell_idx)
     
         # step 3: get control input index from controller
-        control_idx = self.h[(state_idx, self.context)]
+        product_state_idx = state_idx  # Product state combines (spec_state, sys_state)
+        control_idx = self.h[product_state_idx]
 
         # step 4: convert control index to continuous control input
-        control_input = self.Discretisation.control_cell_idx_to_continuous(
-            self.Discretisation.idx_to_coord(control_idx)
-        )
+        if control_idx != -1:
+            control_cell_idx = self.Discretisation.idx_to_coord(control_idx)
+            control_input = self.Discretisation.idx_to_continuous(control_cell_idx, 
+                                                                   self.Discretisation.U_bounds, 
+                                                                   self.Discretisation.cells_per_dim_u)
+        else:
+            control_input = None
+            
         self.u = control_input
 
         return control_input

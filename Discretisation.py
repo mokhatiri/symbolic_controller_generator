@@ -1,6 +1,6 @@
 import numpy as np
 
-class Abstract:
+class Discretisation:
     def __init__(self, X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x=None):
         
         self.X_bounds = X_bounds

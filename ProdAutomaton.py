@@ -33,7 +33,7 @@ class ProdAutomaton:
     def possible_transitions(self, curr_state, ContextState):
         # check all controls
         all_transitions = []
-        for control_idx in range(1, self.SymbolicAbstraction.T.shape[1] + 1):
+        for control_idx in range(self.SymbolicAbstraction.T.shape[1]):
             transitions = self.get_transitions(curr_state, ContextState, control_idx)
             all_transitions.extend(transitions)
         
@@ -41,7 +41,7 @@ class ProdAutomaton:
 
     def get_initial_states(self):
         initial_states = []
-        for sys_state in range(self.SylbolicAbstraction.T.shape[0]):
+        for sys_state in range(self.SymbolicAbstraction.T.shape[0]):
             labels = self.get_labels(sys_state)
             for label in labels:
                 if (self.SpecificationAutomaton.initial_state, label) in self.SpecificationAutomaton.transitions:

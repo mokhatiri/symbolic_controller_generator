@@ -1,7 +1,7 @@
 import numpy as np
 import pandas as pd
 
-class SymbolicAbstraction:
+class AbstractSpace:
     """
     Computes the discrete symbolic abstraction of a continuous nonlinear system.
     
