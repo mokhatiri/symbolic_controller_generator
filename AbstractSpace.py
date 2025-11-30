@@ -183,7 +183,22 @@ class AbstractSpace:
                     # Map continuous reachable set back to discrete cell indices
                     min_successor, max_successor = self.map_continuous_to_discrete_cells(R)
                     
-                    T[state_idx, control_idx] = [min_successor, max_successor]
+                    # Validate that min_successor <= max_successor (valid transition range)
+                    if min_successor <= max_successor:
+                        T[state_idx, control_idx] = [min_successor, max_successor]
+                    else:
+                        # Invalid reachable set (can happen at boundary conditions)
+                        print(f"Warning: Invalid reachable set at state {state_idx}, control {control_idx}: "
+                              f"min_successor ({min_successor}) > max_successor ({max_successor})")
+                        T[state_idx, control_idx] = [0, 0]  # Mark as no valid successors
+                else:
+                    # Reachable set exceeds bounds (system left workspace)
+                    T[state_idx, control_idx] = [0, 0]  # Mark as no valid successors
+            
+            # Periodically clean up temporary arrays to prevent memory accumulation
+            # Every 1000 iterations (approximately every 1000/N_u state-control pairs)
+            if (state_idx + 1) % max(1, 1000 // max(1, self.Discretisation.N_u)) == 0:
+                gc.collect()  # Force garbage collection to free temporary NumPy arrays
         
         return T
     

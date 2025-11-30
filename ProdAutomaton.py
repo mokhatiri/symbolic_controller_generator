@@ -7,8 +7,11 @@ class ProdAutomaton:
         self.total_spec_states = self.SpecificationAutomaton.total_states
         self.total_states = self.total_sys_states * self.total_spec_states
         
-        # OPTIMIZATION: Cache transitions to avoid recomputation
+        # OPTIMIZATION: Cache transitions with bounded size to prevent OOM
+        # Only keep most recent 50,000 queries (LRU eviction on overflow)
         self._transition_cache = {}
+        self._cache_order = []  # Track insertion order for LRU
+        self.MAX_CACHE_SIZE = 50000  # Prevent unbounded memory growth
         self._cache_hits = 0
         self._cache_misses = 0
 
@@ -30,15 +33,23 @@ class ProdAutomaton:
         """
         Get successors for a given state and control.
         
-        **OPTIMIZATION v2**: Cache transitions to avoid recomputation of common queries.
+        **OPTIMIZATION v3**: Cache transitions with bounded size (LRU eviction)
+        to avoid recomputation while preventing OOM on large systems.
         This is especially important for fixed-point iterations that query the same
         transitions multiple times.
+        
+        **Cache Management**: Only keeps 50,000 most recent queries. Older entries
+        are evicted to prevent unbounded memory growth on large product automata.
         """
         # Create cache key
         cache_key = (curr_state, ContextState, control_idx)
         
         if cache_key in self._transition_cache:
             self._cache_hits += 1
+            # Move to end (mark as recently used)
+            if cache_key in self._cache_order:
+                self._cache_order.remove(cache_key)
+            self._cache_order.append(cache_key)
             return self._transition_cache[cache_key]
         
         self._cache_misses += 1
@@ -52,6 +63,12 @@ class ProdAutomaton:
         
         # Cache result
         self._transition_cache[cache_key] = all_transition
+        self._cache_order.append(cache_key)
+        
+        # Evict oldest entry if cache exceeds max size (LRU)
+        if len(self._transition_cache) > self.MAX_CACHE_SIZE:
+            oldest_key = self._cache_order.pop(0)
+            del self._transition_cache[oldest_key]
         
         return all_transition
     
@@ -78,4 +95,6 @@ class ProdAutomaton:
         """Print cache performance statistics (OPTIMIZATION)."""
         total_queries = self._cache_hits + self._cache_misses
         hit_rate = 100 * self._cache_hits / total_queries if total_queries > 0 else 0
+        cache_size_mb = sum(len(str(v)) for v in self._transition_cache.values()) / 1024 / 1024
         print(f"Transition cache stats: {self._cache_hits} hits, {self._cache_misses} misses, {hit_rate:.1f}% hit rate")
+        print(f"Cache size: {len(self._transition_cache)}/{self.MAX_CACHE_SIZE} entries, ~{cache_size_mb:.1f} MB")

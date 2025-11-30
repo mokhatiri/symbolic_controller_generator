@@ -117,9 +117,8 @@ class ControllerSynthesis:
         print(f"  Using pre-computed inverse transition map...")
         inverse_transition = self.Automaton.SymbolicAbstraction.inverse_transition
         
-        # Thread-safe locks for shared state updates
-        V_lock = Lock()
-        h_lock = Lock()
+        # Thread-safe lock for atomic state updates (single lock prevents deadlocks)
+        state_lock = Lock()
         
         def process_state_batch(states_batch):
             """Process a batch of states in parallel and return updates"""
@@ -177,9 +176,9 @@ class ControllerSynthesis:
                     for future in as_completed(futures):
                         all_updates.extend(future.result())
                 
-                # Apply all updates with thread-safe locks
+                # Apply all updates with thread-safe atomic lock
                 for predecessor_state, steps_to_target, control_idx in all_updates:
-                    with V_lock:
+                    with state_lock:  # Single lock ensures V and h update atomically
                         if V[predecessor_state] == -1 or steps_to_target < V[predecessor_state]:
                             V[predecessor_state] = steps_to_target
                             h[predecessor_state] = control_idx
@@ -262,6 +261,9 @@ class ControllerSynthesis:
         num_safe = int(np.sum(safe_states))
         print(f"  Initial safe states: {num_safe}")
         print(f"  Using {self.num_threads} CPU threads for parallel synthesis...")
+        
+        # Thread-safe lock for atomic state updates
+        state_lock = Lock()
         
         def process_safe_states_batch(state_indices_batch):
             """Process a batch of safe states in parallel"""
