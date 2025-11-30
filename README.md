@@ -361,11 +361,11 @@ Define as an `Automaton` object:
 ```python
 def spec_transition(state, label):
     """Specification transition function (state, label) -> next_state"""
-    transitions = {
+    transition = {
         (0, 'reach_target'): 1,
         (1, 'safe'): 1,
     }
-    return transitions.get((state, label))
+    return transition.get((state, label))
 
 spec = Automaton(
     transition=spec_transition,
@@ -460,7 +460,7 @@ The framework automatically wraps reachable sets to [-π, π].
 - **Cause**: Simulation reached unreachable state
 - **Solution**:
   - Verify initial state is in reachable set
-  - Check specification transitions are complete
+  - Check specification transition are complete
   - Increase `max_iter` in synthesis
 
 #### Issue: "Slow computation"
@@ -475,7 +475,7 @@ The framework automatically wraps reachable sets to [-π, π].
 - **Solution**:
   - Verify disturbance bounds are correct
   - Check Jacobian magnitudes
-  - Validate specification transitions
+  - Validate specification transition
 
 ---
 

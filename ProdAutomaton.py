@@ -3,8 +3,8 @@ class ProdAutomaton:
         self.SpecificationAutomaton = SpecificationAutomaton
         self.Labeling = Labeling
         self.SymbolicAbstraction = SymbolicAbstraction
-        self.total_sys_states = self.SymbolicAbstraction.T.shape[0]
-        self.total_spec_states = self.SpecificationAutomaton.states.__len__()
+        self.total_sys_states = self.SymbolicAbstraction.transition.shape[0]
+        self.total_spec_states = self.SpecificationAutomaton.total_states
         self.total_states = self.total_sys_states * self.total_spec_states
 
     def get_labels(self, state):
@@ -12,39 +12,39 @@ class ProdAutomaton:
 
     def Transition(self, next_SysState, ContextState, control_idx): # needs 
         labels = self.get_labels(next_SysState)
-        possible_transitions = []
+        possible_transition = []
         for label in labels:
-            if (ContextState, label) in self.SpecificationAutomaton.transitions:
-                next_SpecState = self.SpecificationAutomaton.transitions[(ContextState, label)]
-                possible_transitions.append((next_SpecState, next_SysState, control_idx))
+            if (ContextState, label) in self.SpecificationAutomaton.transition:
+                next_SpecState = self.SpecificationAutomaton.transition[(ContextState, label)]
+                possible_transition.append((next_SpecState, next_SysState, control_idx))
 
-        # in the case where the labeling is non-deterministic multiple transitions may be possible
-        return possible_transitions
+        # in the case where the labeling is non-deterministic multiple transition may be possible
+        return possible_transition
 
-    def get_transitions(self, curr_state, ContextState, control_idx):
+    def get_transition(self, curr_state, ContextState, control_idx):
         sys_state = curr_state[1]
-        successors = self.SymbolicAbstraction.T[sys_state, control_idx, :]
-        all_transitions = []
+        successors = self.SymbolicAbstraction.transition[sys_state, control_idx, :]
+        all_transition = []
         for next_sys_state in range(successors[0], successors[1] + 1):
-            transitions = self.Transition(next_sys_state, ContextState, control_idx)
-            all_transitions.extend(transitions)
-        return all_transitions
+            transition = self.Transition(next_sys_state, ContextState, control_idx)
+            all_transition.extend(transition)
+        return all_transition
     
-    def possible_transitions(self, curr_state, ContextState):
+    def possible_transition(self, curr_state, ContextState):
         # check all controls
-        all_transitions = []
-        for control_idx in range(self.SymbolicAbstraction.T.shape[1]):
-            transitions = self.get_transitions(curr_state, ContextState, control_idx)
-            all_transitions.extend(transitions)
+        all_transition = []
+        for control_idx in range(self.SymbolicAbstraction.transition.shape[1]):
+            transition = self.get_transition(curr_state, ContextState, control_idx)
+            all_transition.extend(transition)
         
-        return all_transitions
+        return all_transition
 
     def get_initial_states(self):
         initial_states = []
-        for sys_state in range(self.SymbolicAbstraction.T.shape[0]):
+        for sys_state in range(self.SymbolicAbstraction.transition.shape[0]):
             labels = self.get_labels(sys_state)
             for label in labels:
-                if (self.SpecificationAutomaton.initial_state, label) in self.SpecificationAutomaton.transitions:
-                    next_SpecState = self.SpecificationAutomaton.transitions[(self.SpecificationAutomaton.initial_state, label)]
+                if (self.SpecificationAutomaton.initial_state, label) in self.SpecificationAutomaton.transition:
+                    next_SpecState = self.SpecificationAutomaton.transition[(self.SpecificationAutomaton.initial_state, label)]
                     initial_states.append((next_SpecState, sys_state))
         return initial_states

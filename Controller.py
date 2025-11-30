@@ -32,11 +32,21 @@ class ControllerSynthesis:
                        For safety: 1 if safe, 0 if unsafe
             - h[state]: Control input index to apply at this state (-1 if none)
         """
-        if is_reachability:
-            self.V, self.h = self.SynthesisReachabilityController(max_iter)
-        else:
-            self.V, self.h = self.SynthesisSafetyController(max_iter)
+        # first check if we have pre-computed results to load else compute then save
+        try:
+            print("Attempting to load existing controller results from file...")
+            self.Load()
+            print("✓ Loaded existing controller results from file.")
+        
+        except FileNotFoundError:
+            print("✗ No existing controller results found. Computing new controller...")
+            if is_reachability:
+                self.V, self.h = self.SynthesisReachabilityController(max_iter)
+            else:
+                self.V, self.h = self.SynthesisSafetyController(max_iter)
 
+            self.Save()
+            print("✓ Computed and saved new controller results to file.")
         return self.V, self.h
         
     
@@ -96,10 +106,10 @@ class ControllerSynthesis:
                     min_steps = float('inf')
                     best_control = -1
                     
-                    # Get all possible transitions from this state
-                    for control_idx in range(self.Automaton.SymbolicAbstraction.T.shape[1]):
+                    # Get all possible transition from this state
+                    for control_idx in range(self.Automaton.SymbolicAbstraction.transition.shape[1]):
                         # Get successors for this (state, control) pair
-                        successors = self.Automaton.get_transitions(
+                        successors = self.Automaton.get_transition(
                             (spec_state, sys_state), spec_state, control_idx
                         )
                         
@@ -190,9 +200,9 @@ class ControllerSynthesis:
                 control_stability = float('inf')
                 
                 # Try all possible controls
-                for control_idx in range(self.Automaton.SymbolicAbstraction.T.shape[1]):
+                for control_idx in range(self.Automaton.SymbolicAbstraction.transition.shape[1]):
                     # Get successors for this (state, control) pair
-                    successors = self.Automaton.get_transitions(
+                    successors = self.Automaton.get_transition(
                         (spec_state, sys_state), spec_state, control_idx
                     )
                     
@@ -280,15 +290,9 @@ class ControllerSynthesis:
         Returns:
             self (for method chaining)
         """
-        try:
-            self.V = np.loadtxt('./Models/V_result.csv', delimiter=',')
-            self.h = np.loadtxt('./Models/h_result.csv', delimiter=',')
-            print("Loaded saved results successfully.")
-
-        except FileNotFoundError:
-            print("No saved results found. Starting fresh computation.")
-
-        return self
+        self.V = np.loadtxt('./Models/V_result.csv', delimiter=',')
+        self.h = np.loadtxt('./Models/h_result.csv', delimiter=',')
+        print("Loaded saved results successfully.")
 
     def Save(self):
         """

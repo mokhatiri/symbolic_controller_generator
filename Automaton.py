@@ -6,7 +6,7 @@ class Automaton:
         self.total_states = total_states
 
     def get_next_state(self, state, input):
-        return self.transition(state, input)
+        return self.transition[(state, input)]
     
     def is_final_state(self, state):
         return state in self.final_states

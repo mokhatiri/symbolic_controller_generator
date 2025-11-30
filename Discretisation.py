@@ -160,6 +160,24 @@ class Discretisation:
             control_coord[d] = remainder // self.M_u[d]
 
         return control_coord
+    
+    def idx_to_state_bounds(self, state_idx):
+        """
+        Get the continuous bounds of a discrete state cell given its index.
+        
+        Converts a discrete state index to its corresponding continuous bounds
+        in the state space.
+        
+        Args:
+            state_idx: Linear discrete state index (0-indexed)
+            
+        Returns:
+            Tuple of (max_state, min_state) continuous bounds for the cell
+        """
+        state_coord = self.idx_to_coord(state_idx)
+        min_state = self.X_bounds[:, 0] + state_coord * self.dx_cell
+        max_state = min_state + self.dx_cell
+        return max_state, min_state
 
     def discretize_control(self):
         """

@@ -7,7 +7,7 @@ import Controller
 
 class SymbolicController:
  
-    def __init__(self, f, Jx, Jw, X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x, SpecificationAutomaton, states, relation, sets):
+    def __init__(self, f, Jx, Jw, X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x, SpecificationAutomaton, relation, sets):
         """
         Initialize the symbolic controller.
         """
@@ -18,9 +18,15 @@ class SymbolicController:
         self.Discretisation = Discretisation.Discretisation(X_bounds, U_bounds, W_bounds, cells_per_dim_x, cells_per_dim_u, angular_dims_x)
         self.System = System.System(f, Jx, Jw)
 
-        labeling = Labeling.Labeling(states, relation, sets)
+        def actual_relation(state_idx, set):
+            max_state , min_state = self.Discretisation.idx_to_state_bounds(state_idx)
+            return relation(min_state, max_state, set)
+
+        # Pass state indices (0 to N_x-1) instead of continuous state values
+        state_indices = list(range(self.Discretisation.N_x))
+        labeling = Labeling.Labeling(state_indices, actual_relation, sets)
         abstraction = AbstractSpace.AbstractSpace(self.System, self.Discretisation)
-        automaton = ProdAutomaton.ProdAutomaton(abstraction, SpecificationAutomaton, labeling)
+        automaton = ProdAutomaton.ProdAutomaton(SpecificationAutomaton, labeling, abstraction)
 
         self.Controller = Controller.ControllerSynthesis(automaton)
         self.V = None

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import os
 
 class AbstractSpace:
     """
@@ -19,7 +20,17 @@ class AbstractSpace:
         """
         self.System = System
         self.Discretisation = Discretisation
-        self.T = self.compute_symbolic_model()
+        # check if a symbolic model has already been computed and saved
+        try:
+            print("Attempting to load existing symbolic model from file...")
+            self.transition = self.load_symbolic_model("symbolic_model.csv").transition
+            print("✓ Loaded existing symbolic model from file.")
+        except FileNotFoundError:
+            print("✗ No existing symbolic model found. Computing new symbolic model...")
+            self.transition = self.compute_symbolic_model()
+
+        # save the symbolic model for future use
+        self.save_symbolic_model("symbolic_model.csv")
 
     def normalize_angular_bounds(self, R):
         """
@@ -150,6 +161,7 @@ class AbstractSpace:
                     
                     T[state_idx, control_idx] = [min_successor, max_successor]
         
+
         return T
     
 
@@ -160,7 +172,7 @@ class AbstractSpace:
 
     def __getitem__(self, key):
         """Enable indexing notation for accessing symbolic model."""
-        return self.T[key]
+        return self.transition[key]
 
     def save_symbolic_model(self, fname):
         """
@@ -169,13 +181,16 @@ class AbstractSpace:
         Args:
             fname: Name of the CSV file to save to (stored in Models/ directory)
         """
+        # Create Models directory if it doesn't exist
+        os.makedirs("Models", exist_ok=True)
+        
         rows = []
         
         for state_idx in range(self.Discretisation.N_x):
             for control_idx in range(self.Discretisation.N_u):
 
-                min_succ = self.T[state_idx, control_idx, 0]
-                max_succ = self.T[state_idx, control_idx, 1]
+                min_succ = self.transition[state_idx, control_idx, 0]
+                max_succ = self.transition[state_idx, control_idx, 1]
                 
 
                 rows.append([state_idx, control_idx, min_succ, max_succ])
@@ -203,5 +218,5 @@ class AbstractSpace:
             T[state_idx, control_idx, 0] = min_succ
             T[state_idx, control_idx, 1] = max_succ
         
-        self.T = T
+        self.transition = T
         return self
