@@ -11,6 +11,8 @@ class ControllerSynthesis:
         Args:
             Automaton: Instance of the product automaton (system × specification)
             model_dir: Directory to save/load model files (default: './Models')
+        
+        Note: The model_dir should match the one used when creating the Automaton
         """
         self.Automaton = Automaton
         self.model_dir = model_dir
@@ -427,6 +429,15 @@ class ControllerSynthesis:
             FileNotFoundError: If model directory or result files don't exist
         """
         v_path = os.path.join(self.model_dir, 'V_result.csv')
+        h_path = os.path.join(self.model_dir, 'h_result.csv')
+        
+        if not os.path.exists(v_path) or not os.path.exists(h_path):
+            raise FileNotFoundError(f"Result files not found in {self.model_dir}")
+        
+        self.V = np.loadtxt(v_path, delimiter=',')
+        self.h = np.loadtxt(h_path, delimiter=',')
+        print("Loaded saved results successfully.")
+
     def Save(self):
         """
         Save the computed value function and controller to file.
@@ -439,12 +450,3 @@ class ControllerSynthesis:
         
         np.savetxt(v_path, self.V, delimiter=',')
         np.savetxt(h_path, self.h, delimiter=',')
-        self.h = np.loadtxt(h_path, delimiter=',')
-        print("Loaded saved results successfully.")
-
-    def Save(self):
-        """
-        Save the computed value function and controller to file.
-        """
-        np.savetxt(f'{self.model_dir}/V_result.csv', self.V, delimiter=',')
-        np.savetxt(f'{self.model_dir}/h_result.csv', self.h, delimiter=',')

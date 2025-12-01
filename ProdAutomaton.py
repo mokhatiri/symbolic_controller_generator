@@ -1,8 +1,9 @@
 class ProdAutomaton:
-    def __init__(self, SpecificationAutomaton, Labeling, SymbolicAbstraction):
+    def __init__(self, SpecificationAutomaton, Labeling, SymbolicAbstraction, model_dir='./Models'):
         self.SpecificationAutomaton = SpecificationAutomaton
         self.Labeling = Labeling
         self.SymbolicAbstraction = SymbolicAbstraction
+        self.model_dir = model_dir
         self.total_sys_states = self.SymbolicAbstraction.transition.shape[0]
         self.total_spec_states = self.SpecificationAutomaton.total_states
         self.total_states = self.total_sys_states * self.total_spec_states

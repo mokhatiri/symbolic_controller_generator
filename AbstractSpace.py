@@ -10,16 +10,18 @@ class AbstractSpace:
     to a finite symbolic model, enabling discrete controller synthesis.
     """
 
-    def __init__(self, System, Discretisation):
+    def __init__(self, System, Discretisation, model_dir='./Models'):
         """
         Initialize the symbolic abstraction generator.
         Args:
             System: Instance of the continuous system dynamics
             Discretisation: Instance of the discretisation parameters
-            T: Transition system (to be computed)
+            model_dir: Directory to save/load model files (default: './Models')
         """
         self.System = System
         self.Discretisation = Discretisation
+        self.model_dir = model_dir
+        
         # check if a symbolic model has already been computed and saved
         try:
             print("Attempting to load existing symbolic model from file...")
@@ -179,10 +181,10 @@ class AbstractSpace:
         Save the symbolic model to a CSV file for persistent storage and reuse.
         
         Args:
-            fname: Name of the CSV file to save to (stored in Models/ directory)
+            fname: Name of the CSV file to save to (stored in model_dir)
         """
-        # Create Models directory if it doesn't exist
-        os.makedirs("Models", exist_ok=True)
+        # Create model directory if it doesn't exist
+        os.makedirs(self.model_dir, exist_ok=True)
         
         rows = []
         
@@ -196,16 +198,23 @@ class AbstractSpace:
                 rows.append([state_idx, control_idx, min_succ, max_succ])
         
         df = pd.DataFrame(rows, columns=['State Index', 'Input Index', 'Min Successor', 'Max Successor'])
-        df.to_csv("Models/"+fname, index=False)
+        df.to_csv(os.path.join(self.model_dir, fname), index=False)
 
     def load_symbolic_model(self, fname="symbolic_model.csv"):
         """
         Load a previously computed symbolic model from a CSV file.
         
         Args:
-            fname: Name of the CSV file to load from (in Models/ directory)
+            fname: Name of the CSV file to load from (in model_dir)
+        
+        Raises:
+            FileNotFoundError: If the model file doesn't exist
         """
-        df = pd.read_csv("Models/"+fname)
+        model_path = os.path.join(self.model_dir, fname)
+        if not os.path.exists(model_path):
+            raise FileNotFoundError(f"Symbolic model file not found: {model_path}")
+        
+        df = pd.read_csv(model_path)
         
         T = np.zeros((self.Discretisation.N_x, self.Discretisation.N_u, 2), dtype=int)
         
