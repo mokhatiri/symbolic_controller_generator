@@ -15,6 +15,22 @@ class ControllerSynthesis:
         self.model_dir = model_dir
         self.V = None
         self.h = None
+        
+        # Build mapping from spec state indices to names
+        # Extract all unique spec states from the transition dictionary keys
+        spec_states = set()
+        for (state, _), _ in self.Automaton.SpecificationAutomaton.transition.items():
+            spec_states.add(state)
+        # Also add states from transition values
+        for _, next_state in self.Automaton.SpecificationAutomaton.transition.items():
+            spec_states.add(next_state)
+        spec_states.add(self.Automaton.SpecificationAutomaton.initial_state)
+        spec_states.update(self.Automaton.SpecificationAutomaton.final_states)
+        
+        # Sort to ensure consistent ordering (alphabetical for strings)
+        self.spec_state_list = sorted(list(spec_states))
+        self.spec_state_to_idx = {state: idx for idx, state in enumerate(self.spec_state_list)}
+        self.idx_to_spec_state = {idx: state for idx, state in enumerate(self.spec_state_list)}
 
 
     def Start(self, is_reachability=True, max_iter=10000):
@@ -88,79 +104,91 @@ class ControllerSynthesis:
         """
         start_time = time.time()
         
-        # Initialize
-        V = -np.ones(self.Automaton.total_states, dtype=np.int32)  # -1 means unreachable
-        h = -np.ones(self.Automaton.total_states, dtype=np.int32)  # -1 means no valid control
+        # Initialize 2D arrays [spec_state_idx, sys_state_idx] for fast access
+        n_spec = len(self.spec_state_list)
+        n_sys = self.Automaton.total_sys_states
+        
+        V = np.full((n_spec, n_sys), -1, dtype=np.int32)  # -1 means unreachable
+        h = np.full((n_spec, n_sys), -1, dtype=np.int32)  # -1 means no valid control
         
         # Get target states (final states in the specification automaton)
         target_spec_states = set(self.Automaton.SpecificationAutomaton.final_states)
         
-        # OPTIMIZATION v3: Use NumPy boolean array for R instead of set
-        # This enables vectorized operations
-        R = np.zeros(self.Automaton.total_states, dtype=bool)
-        for state_idx in range(self.Automaton.total_states):
-            spec_state, sys_state = self._decompose_product_state(state_idx)
-            if spec_state in target_spec_states:
-                R[state_idx] = True
-                V[state_idx] = 0  # Already at target
+        # Initialize target states with V=0 (already at target)
+        num_initial_targets = 0
+        for spec_state_name in target_spec_states:
+            spec_state_idx = self.spec_state_to_idx[spec_state_name]
+            V[spec_state_idx, :] = 0  # All sys states with target spec state
+            num_initial_targets += n_sys
         
-        num_initial_targets = np.sum(R)
-        print(f"  Initial target states: {int(num_initial_targets)}")
+        print(f"  Initial target states: {num_initial_targets}")
         
-        # Pre-compute inverse transition map for efficiency
-        print(f"  Pre-computing inverse transition map...")
-        inverse_transition = self._build_inverse_transition_map()
-        
-        # OPTIMIZATION v3: Vectorized fixed-point iteration
+        # Forward iteration (like reference): Check each state's successors
         for iteration in range(max_iter):
-            R_old = R.copy()
-            newly_reachable = np.zeros(self.Automaton.total_states, dtype=bool)
+            V_old = V.copy()
             
-            # Find states that changed this iteration to minimize work
-            # Only check predecessors of newly reachable states
-            states_to_check_indices = np.where(R & ~R_old)[0] if iteration > 0 else np.where(R)[0]
-            
-            # Batch process predecessors (OPTIMIZATION: vectorized)
-            for target_state in states_to_check_indices:
-                if target_state in inverse_transition:
-                    # Process all predecessors of this target state at once
-                    predecessors = inverse_transition[target_state]
+            # Iterate over all system states
+            for sys_state in range(n_sys):
+                # Get labeling for this system state
+                labels = self.Automaton.Labeling[sys_state]
+                
+                # Iterate over all spec states
+                for spec_state_name in self.spec_state_list:
+                    spec_state_idx = self.spec_state_to_idx[spec_state_name]
                     
-                    for predecessor_state, control_idx in predecessors:
-                        if not R[predecessor_state]:  # Only process if not already reachable
-                            # Check if this control actually reaches target
-                            spec_state, sys_state = self._decompose_product_state(predecessor_state)
-                            successors = self.Automaton.get_transition(
-                                (spec_state, sys_state), spec_state, control_idx
-                            )
+                    # Skip if already reachable
+                    if V[spec_state_idx, sys_state] != -1:
+                        continue
+                    
+                    # Get next spec state based on labeling
+                    next_spec_states = []
+                    for label in labels:
+                        if (spec_state_name, label) in self.Automaton.SpecificationAutomaton.transition:
+                            next_spec = self.Automaton.SpecificationAutomaton.transition[(spec_state_name, label)]
+                            next_spec_states.append(next_spec)
+                    
+                    if not next_spec_states:
+                        continue
+                    
+                    # Try all controls to find one that reaches target
+                    best_steps = np.inf
+                    best_control = -1
+                    
+                    for control_idx in range(self.Automaton.SymbolicAbstraction.transition.shape[1]):
+                        # Get successor range [min, max]
+                        succ_range = self.Automaton.SymbolicAbstraction.transition[sys_state, control_idx, :]
+                        min_succ, max_succ = succ_range[0], succ_range[1]
+                        
+                        if min_succ == 0 and max_succ == 0:  # No successors
+                            continue
+                        
+                        # Check if all successors in next spec states are reachable
+                        for next_spec_name in next_spec_states:
+                            next_spec_idx = self.spec_state_to_idx[next_spec_name]
                             
-                            # Check if any successor is in R (vectorized check)
-                            successor_states = np.array([
-                                self._compose_product_state(next_spec_state, next_sys_state)
-                                for next_spec_state, next_sys_state, _ in successors
-                            ])
+                            # Get values for all successors in range
+                            succ_values = V_old[next_spec_idx, min_succ:max_succ+1]
                             
-                            if np.any(R[successor_states]):
-                                # Find best successor (minimum steps)
-                                reachable_successors = successor_states[R[successor_states]]
-                                steps_to_target = np.min(V[reachable_successors]) + 1
-                                
-                                # Only update if this is better than current
-                                if V[predecessor_state] == -1 or steps_to_target < V[predecessor_state]:
-                                    V[predecessor_state] = steps_to_target
-                                    h[predecessor_state] = control_idx
-                                    newly_reachable[predecessor_state] = True
+                            # Check if all are reachable (not -1)
+                            if np.all(succ_values != -1):
+                                # Found a control that reaches target
+                                max_steps = np.max(succ_values) + 1
+                                if max_steps < best_steps:
+                                    best_steps = max_steps
+                                    best_control = control_idx
+                    
+                    if best_control != -1:
+                        V[spec_state_idx, sys_state] = best_steps
+                        h[spec_state_idx, sys_state] = best_control
             
-            R = R | newly_reachable  # Vectorized union (OPTIMIZATION)
-            
-            # Progress logging with vectorized operations
-            num_reachable = int(np.sum(R))
+            # Progress logging
+            num_reachable = int(np.sum(V != -1))
             if iteration % max(1, max_iter // 10) == 0 or iteration < 5:
                 elapsed = time.time() - start_time
                 print(f"    Iteration {iteration}: {num_reachable} reachable states, {elapsed:.2f}s")
             
-            # Check for convergence (vectorized comparison)
-            if np.array_equal(R, R_old):
+            # Check for convergence
+            if np.array_equal(V, V_old):
                 elapsed = time.time() - start_time
                 print(f"  Reachability: Converged at iteration {iteration} ({elapsed:.2f}s)")
                 break
@@ -170,9 +198,14 @@ class ControllerSynthesis:
                 print(f"  Reachability: Reached max iterations ({max_iter}) ({elapsed:.2f}s)")
         
         elapsed = time.time() - start_time
-        num_reachable = int(np.sum(R))
-        print(f"  Reachability: {num_reachable} of {self.Automaton.total_states} states reachable ({elapsed:.2f}s)")
-        return V, h
+        num_reachable = int(np.sum(V != -1))
+        total_states = n_spec * n_sys
+        print(f"  Reachability: {num_reachable} of {total_states} states reachable ({elapsed:.2f}s)")
+        
+        # Flatten back to 1D for compatibility with existing code
+        V_flat = V.flatten()
+        h_flat = h.flatten()
+        return V_flat, h_flat
 
     def SynthesisSafetyController(self, max_iter):
         """
@@ -217,11 +250,14 @@ class ControllerSynthesis:
         safe_states = np.ones(self.Automaton.total_states, dtype=bool)
         
         # Mark target states as safe (they are our goal)
-        target_states = self.Automaton.SpecificationAutomaton.final_states
-        target_indices = np.array([
-            state_idx for state_idx in range(self.Automaton.total_states)
-            if (state_idx // self.Automaton.total_sys_states) in target_states
-        ], dtype=np.int32)
+        target_states = set(self.Automaton.SpecificationAutomaton.final_states)
+        target_indices = []
+        for state_idx in range(self.Automaton.total_states):
+            spec_state, sys_state = self._decompose_product_state(state_idx)
+            # spec_state is now a string name, compare directly
+            if spec_state in target_states:
+                target_indices.append(state_idx)
+        target_indices = np.array(target_indices, dtype=np.int32)
         V[target_indices] = 1
         
         num_safe = int(np.sum(safe_states))
@@ -309,34 +345,43 @@ class ControllerSynthesis:
         """
         Decompose a product automaton state index into (spec_state, sys_state).
         
-        Product states are organized as: spec_state * N_sys_states + sys_state
+        Product states are organized as: spec_state_idx * N_sys_states + sys_state
         
         Args:
             product_state_idx: Index in product automaton
             
         Returns:
-            Tuple of (spec_state_idx, sys_state_idx)
+            Tuple of (spec_state_name, sys_state_idx)
+            - spec_state_name: String name like 'a', 'b', 'c', 'd', 'e'
+            - sys_state_idx: Integer index in system abstraction
         """
         N_sys = self.Automaton.total_sys_states
-        spec_state = product_state_idx // N_sys
+        spec_state_idx = product_state_idx // N_sys
         sys_state = product_state_idx % N_sys
-        return spec_state, sys_state
+        spec_state_name = self.idx_to_spec_state[spec_state_idx]
+        return spec_state_name, sys_state
 
     def _compose_product_state(self, spec_state, sys_state):
         """
         Compose a product state index from (spec_state, sys_state).
         
-        Product states are organized as: spec_state * N_sys_states + sys_state
+        Product states are organized as: spec_state_idx * N_sys_states + sys_state
         
         Args:
-            spec_state: Specification automaton state index
+            spec_state: Specification automaton state (can be name string or index)
             sys_state: System abstraction state index
             
         Returns:
             Product state index
         """
+        # Handle both string names and integer indices
+        if isinstance(spec_state, str):
+            spec_state_idx = self.spec_state_to_idx[spec_state]
+        else:
+            spec_state_idx = spec_state
+        
         N_sys = self.Automaton.total_sys_states
-        return spec_state * N_sys + sys_state
+        return spec_state_idx * N_sys + sys_state
 
     def _build_inverse_transition_map(self):
         """
