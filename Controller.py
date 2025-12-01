@@ -1,5 +1,6 @@
 import numpy as np
 import time
+import os
 
 class ControllerSynthesis:
 
@@ -421,9 +422,24 @@ class ControllerSynthesis:
         
         Returns:
             self (for method chaining)
+        
+        Raises:
+            FileNotFoundError: If model directory or result files don't exist
         """
-        self.V = np.loadtxt(f'{self.model_dir}/V_result.csv', delimiter=',')
-        self.h = np.loadtxt(f'{self.model_dir}/h_result.csv', delimiter=',')
+        v_path = os.path.join(self.model_dir, 'V_result.csv')
+    def Save(self):
+        """
+        Save the computed value function and controller to file.
+        """
+        # Create model directory if it doesn't exist
+        os.makedirs(self.model_dir, exist_ok=True)
+        
+        v_path = os.path.join(self.model_dir, 'V_result.csv')
+        h_path = os.path.join(self.model_dir, 'h_result.csv')
+        
+        np.savetxt(v_path, self.V, delimiter=',')
+        np.savetxt(h_path, self.h, delimiter=',')
+        self.h = np.loadtxt(h_path, delimiter=',')
         print("Loaded saved results successfully.")
 
     def Save(self):
