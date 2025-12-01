@@ -28,34 +28,52 @@ class AbstractSpace:
         self.Discretisation = Discretisation
         self.model_dir = model_dir
         self.num_threads = num_threads or os.cpu_count() or 4
-        self._inverse_transition = None  # Lazy initialization
+        self._inverse_transition = None  # Will store the main transition map
         
         # check if a symbolic model has already been computed and saved
         try:
-            print("Attempting to load existing symbolic model from file...")
-            loaded = self.load_symbolic_model("symbolic_model.csv")
-            self.transition = loaded.transition
+            print("Attempting to load existing symbolic model (inverse map) from file...")
+            self.load_symbolic_model("inverse_transition.csv")
             print("✓ Loaded existing symbolic model from file.")
         except FileNotFoundError:
             print("✗ No existing symbolic model found. Computing new symbolic model...")
             print(f"  Using {self.num_threads} CPU threads for parallel computation...")
-            self.transition = self.compute_symbolic_model()
+            self._inverse_transition = self.compute_inverse_symbolic_model()
 
         # save the symbolic model for future use
-        self.save_symbolic_model("symbolic_model.csv")
+        self.save_symbolic_model("inverse_transition.csv")
     
     @property
     def inverse_transition(self):
-        """Lazy-load inverse transition map on first access."""
-        if self._inverse_transition is None:
-            print("  Building inverse transition map from forward table...")
-            self._reconstruct_inverse_transition_map()
+        """Return the inverse transition map (primary storage)."""
         return self._inverse_transition
     
     @inverse_transition.setter
     def inverse_transition(self, value):
         """Allow setting inverse transition map."""
         self._inverse_transition = value
+    
+    def get_successors(self, state_idx, control_idx):
+        """
+        Get successor states for a given (state, control) pair from inverse map.
+        
+        This replaces the forward transition lookup by searching the inverse map.
+        
+        Args:
+            state_idx: State index
+            control_idx: Control index
+            
+        Returns:
+            List of successor state indices
+        """
+        successors = []
+        # Search inverse map for all states that have (state_idx, control_idx) as predecessor
+        for succ_state, predecessors in self._inverse_transition.items():
+            for pred_state, pred_control in predecessors:
+                if pred_state == state_idx and pred_control == control_idx:
+                    successors.append(succ_state)
+                    break
+        return successors
 
     def normalize_angular_bounds(self, R):
         """
@@ -146,32 +164,32 @@ class AbstractSpace:
         
         return R
 
-    def compute_symbolic_model(self):
+    def compute_inverse_symbolic_model(self):
         """
-        Compute the discrete symbolic model (transition system).
+        Compute the inverse transition map directly (memory-efficient approach).
         
-        For each discrete state and control input pair (state_idx, control_idx), this method computes
-        the set of reachable successor states by:
-        1. Computing the continuous center point of the cell
-        2. Applying one step of the continuous dynamics
-        3. Computing the reachable set interval using interval arithmetic
-        4. Mapping this reachable set back to discrete cells
-        5. Normalizing angular dimensions to [-pi, pi]
+        Instead of storing a dense forward transition table, we build a sparse inverse map:
+        inverse_map[successor_state] = [(predecessor_state, control), ...]
+        
+        This is more memory-efficient since most state-control pairs have few successors.
         
         Returns:
-            T: 3D array of shape (N_x, N_u, 2) where T[state_idx, control_idx, :] = [min_successor, max_successor]
-        
-        Note: Inverse transition map is computed lazily on first use (see inverse_transition property)
+            inverse_map: Dictionary mapping successor states to list of (predecessor, control) tuples
         """
+        from collections import defaultdict
+        
+        print("  Computing inverse transition map directly (memory-efficient)...")
         
         # Disturbance at equilibrium point (center of disturbance bounds)
         w_center = 0.5 * (self.Discretisation.W_bounds[:, 0] + self.Discretisation.W_bounds[:, 1])
         
-        # Initialize transition table
-        T = np.zeros((self.Discretisation.N_x, self.Discretisation.N_u, 2), dtype=int)
+        # Initialize inverse map as defaultdict
+        inverse_map = defaultdict(list)
         
         # Precompute discretized controls
         U_disc = self.Discretisation.discretize_control()
+        
+        total_transitions = 0
         
         for state_idx in range(self.Discretisation.N_x):
             # Get continuous state at cell center
@@ -198,18 +216,30 @@ class AbstractSpace:
                     # Map continuous reachable set back to discrete cell indices
                     min_successor, max_successor = self.map_continuous_to_discrete_cells(R)
                     
-                    # Store the transition
-                    T[state_idx, control_idx] = [min_successor, max_successor]
-                else:
-                    # Reachable set exceeds bounds (system left workspace)
-                    T[state_idx, control_idx] = [0, 0]  # Mark as no valid successors
+                    # Add all successors to inverse map
+                    # Handle wrapped intervals (when min > max for angular dimensions)
+                    if min_successor <= max_successor:
+                        # Normal contiguous range
+                        for succ_idx in range(min_successor, max_successor + 1):
+                            inverse_map[succ_idx].append((state_idx, control_idx))
+                            total_transitions += 1
+                    else:
+                        # Wrapped range: [min, N_x-1] and [0, max]
+                        for succ_idx in range(min_successor, self.Discretisation.N_x):
+                            inverse_map[succ_idx].append((state_idx, control_idx))
+                            total_transitions += 1
+                        for succ_idx in range(0, max_successor + 1):
+                            inverse_map[succ_idx].append((state_idx, control_idx))
+                            total_transitions += 1
             
-            # Periodically clean up temporary arrays to prevent memory accumulation
-            # Every 1000 iterations (approximately every 1000/N_u state-control pairs)
+            # Progress logging and memory cleanup
             if (state_idx + 1) % max(1, 1000 // max(1, self.Discretisation.N_u)) == 0:
-                gc.collect()  # Force garbage collection to free temporary NumPy arrays
+                progress = 100 * (state_idx + 1) / self.Discretisation.N_x
+                print(f"    Progress: {progress:.1f}% ({state_idx + 1}/{self.Discretisation.N_x} states, {total_transitions} transitions)")
+                gc.collect()
         
-        return T
+        print(f"  ✓ Computed inverse map: {len(inverse_map)} states with transitions, {total_transitions} total transitions")
+        return dict(inverse_map)
     
 
     """
@@ -217,13 +247,21 @@ class AbstractSpace:
     """
 
     def __getitem__(self, key):
-        """Enable indexing notation for accessing symbolic model."""
-        return self.transition[key]
+        """
+        Enable indexing notation for accessing successors.
+        Note: This now works differently - returns list of successors instead of range.
+        
+        Usage: AbstractSpace[state_idx, control_idx] returns list of successor states
+        """
+        if isinstance(key, tuple) and len(key) == 2:
+            state_idx, control_idx = key
+            return self.get_successors(state_idx, control_idx)
+        else:
+            raise KeyError("Expected tuple of (state_idx, control_idx)")
 
     def save_symbolic_model(self, fname):
         """
-        Save the symbolic model to CSV file for persistent storage and reuse.
-        The inverse transition map is computed on-demand from the forward table.
+        Save the inverse transition map to CSV file for persistent storage and reuse.
         
         Args:
             fname: Name of the CSV file to save to (stored in model_dir)
@@ -231,65 +269,38 @@ class AbstractSpace:
         # Create model directory if it doesn't exist
         os.makedirs(self.model_dir, exist_ok=True)
         
-        # Save forward transition table only (inverse is computed on-demand)
+        # Save inverse transition map (sparse format)
         rows = []
+        for successor_state, predecessors in self._inverse_transition.items():
+            for predecessor_state, control_idx in predecessors:
+                rows.append([predecessor_state, control_idx, successor_state])
         
-        for state_idx in range(self.Discretisation.N_x):
-            for control_idx in range(self.Discretisation.N_u):
-
-                min_succ = self.transition[state_idx, control_idx, 0]
-                max_succ = self.transition[state_idx, control_idx, 1]
-                
-
-                rows.append([state_idx, control_idx, min_succ, max_succ])
-        
-        df = pd.DataFrame(rows, columns=['State Index', 'Input Index', 'Min Successor', 'Max Successor'])
+        df = pd.DataFrame(rows, columns=['Predecessor State', 'Control Index', 'Successor State'])
         df.to_csv(f"{self.model_dir}/{fname}", index=False)
+        print(f"  ✓ Saved {len(rows)} transitions to {self.model_dir}/{fname}")
 
-    def load_symbolic_model(self, fname="symbolic_model.csv"):
+    def load_symbolic_model(self, fname="inverse_transition.csv"):
         """
-        Load a previously computed symbolic model from CSV file.
-        The inverse transition map is reconstructed on-demand (lazy-loaded).
+        Load the inverse transition map from CSV file.
         
         Args:
             fname: Name of the CSV file to load from (in model_dir)
         """
-        # Load forward transition table
+        from collections import defaultdict
+        
+        # Load inverse transition map
         df = pd.read_csv(f"{self.model_dir}/{fname}")
         
-        T = np.zeros((self.Discretisation.N_x, self.Discretisation.N_u, 2), dtype=int)
-        
+        inverse_map = defaultdict(list)
         for _, row in df.iterrows():
-            state_idx = int(row['State Index'])
-            control_idx = int(row['Input Index'])
-            min_succ = int(row['Min Successor'])
-            max_succ = int(row['Max Successor'])
+            predecessor_state = int(row['Predecessor State'])
+            control_idx = int(row['Control Index'])
+            successor_state = int(row['Successor State'])
             
-            T[state_idx, control_idx, 0] = min_succ
-            T[state_idx, control_idx, 1] = max_succ
+            inverse_map[successor_state].append((predecessor_state, control_idx))
         
-        self.transition = T
+        self._inverse_transition = dict(inverse_map)
+        print(f"  ✓ Loaded {len(df)} transitions from {self.model_dir}/{fname}")
         
         return self
     
-    def _reconstruct_inverse_transition_map(self):
-        """
-        Reconstruct inverse transition map from the forward transition table.
-        This is done on-demand to save memory (not persisted to disk).
-        
-        Stores result in self.inverse_transition
-        """
-        from collections import defaultdict
-        inverse_map = defaultdict(list)
-        
-        # Iterate through forward table to build inverse
-        for state_idx in range(self.transition.shape[0]):
-            for control_idx in range(self.transition.shape[1]):
-                min_succ = self.transition[state_idx, control_idx, 0]
-                max_succ = self.transition[state_idx, control_idx, 1]
-                
-                # For all successors in range, add predecessor
-                for succ_idx in range(min_succ, max_succ + 1):
-                    inverse_map[succ_idx].append((state_idx, control_idx))
-        
-        self.inverse_transition = dict(inverse_map)
