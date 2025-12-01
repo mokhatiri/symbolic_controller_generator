@@ -99,15 +99,32 @@ class ControllerSynthesis:
         
         # Get target states (final states in the specification automaton)
         target_spec_states = set(self.Automaton.SpecificationAutomaton.final_states)
+        print("  Identified target specification states:", target_spec_states)
+        
+        # Build a mapping from spec state names to indices
+        # Extract all unique spec states from the automaton
+        all_spec_states = set()
+        for (state, _), _ in self.Automaton.SpecificationAutomaton.transition.items():
+            all_spec_states.add(state)
+        all_spec_states.add(self.Automaton.SpecificationAutomaton.initial_state)
+        all_spec_states.update(self.Automaton.SpecificationAutomaton.final_states)
+        
+        # Create a sorted mapping (alphabetical order for consistency)
+        self.spec_state_to_idx = {state: idx for idx, state in enumerate(sorted(all_spec_states))}
+        self.idx_to_spec_state = {idx: state for state, idx in self.spec_state_to_idx.items()}
+        
+        print(f"  Spec state mapping: {self.spec_state_to_idx}")
         
         # OPTIMIZATION v4: Use NumPy boolean array for R instead of set
         # This enables vectorized operations
         R = np.zeros(self.Automaton.total_states, dtype=bool)
-        for state_idx in range(self.Automaton.total_states):
-            spec_state, sys_state = self._decompose_product_state(state_idx)
-            if spec_state in target_spec_states:
-                R[state_idx] = True
-                V[state_idx] = 0  # Already at target
+        for spec_state_name in target_spec_states:
+            if spec_state_name in self.spec_state_to_idx:
+                spec_state_idx = self.spec_state_to_idx[spec_state_name]
+                for sys_state in range(self.Automaton.total_sys_states):
+                    state_idx = self._compose_product_state(spec_state_idx, sys_state)
+                    R[state_idx] = True
+                    V[state_idx] = 0  # Already at target
         
         num_initial_targets = np.sum(R)
         print(f"  Initial target states: {int(num_initial_targets)}")
@@ -255,11 +272,16 @@ class ControllerSynthesis:
         safe_states = np.ones(self.Automaton.total_states, dtype=bool)
         
         # Mark target states as safe (they are our goal)
-        target_states = self.Automaton.SpecificationAutomaton.final_states
-        target_indices = np.array([
-            state_idx for state_idx in range(self.Automaton.total_states)
-            if (state_idx // self.Automaton.total_sys_states) in target_states
-        ], dtype=np.int32)
+        target_spec_states = set(self.Automaton.SpecificationAutomaton.final_states)
+        target_indices = []
+        for spec_state_name in target_spec_states:
+            if spec_state_name in self.spec_state_to_idx:
+                spec_state_idx = self.spec_state_to_idx[spec_state_name]
+                for sys_state in range(self.Automaton.total_sys_states):
+                    state_idx = self._compose_product_state(spec_state_idx, sys_state)
+                    target_indices.append(state_idx)
+        
+        target_indices = np.array(target_indices, dtype=np.int32)
         V[target_indices] = 1
         
         num_safe = int(np.sum(safe_states))
@@ -379,20 +401,24 @@ class ControllerSynthesis:
 
     def _decompose_product_state(self, product_state_idx):
         """
-        Decompose a product automaton state index into (spec_state, sys_state).
+        Decompose a product automaton state index into (spec_state_name, sys_state).
         
-        Product states are organized as: spec_state * N_sys_states + sys_state
+        Product states are organized as: spec_state_idx * N_sys_states + sys_state
+        Then mapped back to spec_state_name using idx_to_spec_state mapping.
         
         Args:
             product_state_idx: Index in product automaton
             
         Returns:
-            Tuple of (spec_state_idx, sys_state_idx)
+            Tuple of (spec_state_name, sys_state_idx)
         """
         N_sys = self.Automaton.total_sys_states
-        spec_state = product_state_idx // N_sys
+        spec_state_idx = product_state_idx // N_sys
         sys_state = product_state_idx % N_sys
-        return spec_state, sys_state
+        
+        # Convert spec_state_idx back to name
+        spec_state_name = self.idx_to_spec_state.get(spec_state_idx, None)
+        return spec_state_name, sys_state
 
     def _compose_product_state(self, spec_state, sys_state):
         """

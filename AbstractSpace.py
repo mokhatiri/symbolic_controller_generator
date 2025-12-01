@@ -44,6 +44,7 @@ class AbstractSpace:
         # save the symbolic model for future use
         self.save_symbolic_model("symbolic_model.csv")
     
+    @property
     def inverse_transition(self):
         """Lazy-load inverse transition map on first access."""
         if self._inverse_transition is None:
@@ -51,6 +52,7 @@ class AbstractSpace:
             self._reconstruct_inverse_transition_map()
         return self._inverse_transition
     
+    @inverse_transition.setter
     def inverse_transition(self, value):
         """Allow setting inverse transition map."""
         self._inverse_transition = value
