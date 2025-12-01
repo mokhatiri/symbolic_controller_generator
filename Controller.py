@@ -155,7 +155,8 @@ class ControllerSynthesis:
             return local_updates
         
         # OPTIMIZATION v4: Vectorized fixed-point iteration with multi-threading
-        for iteration in range(max_iter):
+        iteration = 0
+        while iteration < max_iter:
             R_old = R.copy()
             newly_reachable = np.zeros(self.Automaton.total_states, dtype=bool)
             
@@ -198,9 +199,12 @@ class ControllerSynthesis:
                 print(f"  Reachability: Converged at iteration {iteration} ({elapsed:.2f}s)")
                 break
             
-            if iteration == max_iter - 1:
+            iteration += 1
+            
+            if iteration >= max_iter:
                 elapsed = time.time() - start_time
                 print(f"  Reachability: Reached max iterations ({max_iter}) ({elapsed:.2f}s)")
+                break
         
         elapsed = time.time() - start_time
         num_reachable = int(np.sum(R))
@@ -314,7 +318,8 @@ class ControllerSynthesis:
             return local_updates
         
         # Fixed-point iteration: shrink safe set
-        for iteration in range(max_iter):
+        iteration = 0
+        while iteration < max_iter:
             safe_old = safe_states.copy()
             
             # Get indices of safe states (OPTIMIZATION: vectorized indexing)
@@ -349,7 +354,8 @@ class ControllerSynthesis:
             # Progress logging with vectorized operations
             num_safe = int(np.sum(safe_states))
             num_removed = int(np.sum(~safe_old & safe_states == False))
-            if iteration % max(1, max_iter // 10) == 0 or iteration < 5:
+            log_interval = 10 if max_iter == float('inf') else max(1, int(max_iter // 10))
+            if iteration % log_interval == 0 or iteration < 5:
                 elapsed = time.time() - start_time
                 print(f"    Iteration {iteration}: {num_safe} safe states, removed {num_removed}, {elapsed:.2f}s")
             
@@ -359,9 +365,12 @@ class ControllerSynthesis:
                 print(f"  Safety: Converged at iteration {iteration} ({elapsed:.2f}s)")
                 break
             
-            if iteration == max_iter - 1:
+            iteration += 1
+            
+            if iteration >= max_iter:
                 elapsed = time.time() - start_time
                 print(f"  Safety: Reached max iterations ({max_iter}) ({elapsed:.2f}s)")
+                break
         
         elapsed = time.time() - start_time
         num_safe = int(np.sum(safe_states))
