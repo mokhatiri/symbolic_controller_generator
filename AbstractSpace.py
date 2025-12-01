@@ -57,30 +57,26 @@ class AbstractSpace:
 
     def normalize_angular_bounds(self, R):
         """
-        Normalize angular dimensions to [-pi, pi].
+        Don't normalize angular bounds - preserve intervals for proper discretization.
         
-        For each dimension marked as angular in the discretisation,
-        this method wraps the reachable set bounds to the [-pi, pi] range.
+        The old working code didn't normalize angular dimensions before discretization.
+        Angular wrapping is handled during the discretization mapping instead.
         
         Args:
             R: Reachable set bounds array of shape (2, n_dims) with [min_coords; max_coords]
         
         Returns:
-            R with angular dimensions normalized to [-pi, pi]
+            R (unchanged - intervals preserved)
         """
-        for dim in self.Discretisation.angular_dims_x:
-            # Normalize both min and max to [-pi, pi]
-            R[0, dim] = np.mod(R[0, dim] + np.pi, 2 * np.pi) - np.pi
-            R[1, dim] = np.mod(R[1, dim] + np.pi, 2 * np.pi) - np.pi
-        
+        # Don't normalize! Angular wrapping is handled during discretization.
         return R
 
     def map_continuous_to_discrete_cells(self, R):
         """
         Map continuous reachable set bounds to discrete cell coordinates.
         
-        Generalizes the repeated computation of mapping continuous intervals to discrete cells.
-        Handles the floor/ceil logic for interval discretization.
+        Handles angular dimensions with wrapping (modulo arithmetic).
+        This matches the behavior of the old working code.
         
         Args:
             R: Reachable set with shape (n_dims, 2) where [:, 0] = min, [:, 1] = max
@@ -95,6 +91,21 @@ class AbstractSpace:
         max_succ_coord = np.ceil(
             (R[:, 1] - self.Discretisation.X_bounds[:, 0]) / self.Discretisation.dx_cell
         ).astype(int) - 1
+        
+        # Get the number of cells per dimension
+        cells_per_dim = np.diff(self.Discretisation.M_x)
+        
+        # Handle angular dimensions with wrapping (modulo arithmetic)
+        for dim in self.Discretisation.angular_dims_x:
+            # Wrap coordinates to valid range [0, cells_per_dim-1]
+            min_succ_coord[dim] = min_succ_coord[dim] % cells_per_dim[dim]
+            max_succ_coord[dim] = max_succ_coord[dim] % cells_per_dim[dim]
+        
+        # Clamp non-angular dimensions to valid range
+        for dim in range(len(min_succ_coord)):
+            if dim not in self.Discretisation.angular_dims_x:
+                min_succ_coord[dim] = np.clip(min_succ_coord[dim], 0, cells_per_dim[dim] - 1)
+                max_succ_coord[dim] = np.clip(max_succ_coord[dim], 0, cells_per_dim[dim] - 1)
         
         # Convert cell coordinates to discrete state indices
         min_successor = self.Discretisation.coord_to_idx(min_succ_coord)
@@ -171,26 +182,22 @@ class AbstractSpace:
                 # Compute reachable set bounds using Jacobian-based interval arithmetic
                 R = self.compute_reachable_set(x_center, u_control, w_center)
                 
-                # Normalize angular dimensions to [-pi, pi]
-                R = self.normalize_angular_bounds(R)
-
                 R = R.transpose()
                 
-                # Check if reachable set is within state bounds and map to discrete cells
-                if (np.all(R[:, 0] >= self.Discretisation.X_bounds[:, 0]) and 
-                    np.all(R[:, 1] <= self.Discretisation.X_bounds[:, 1])):
-                    
+                # Check if reachable set is within state bounds (non-angular dimensions only)
+                valid = True
+                for dim in range(R.shape[0]):
+                    if dim not in self.Discretisation.angular_dims_x:
+                        if R[dim, 0] < self.Discretisation.X_bounds[dim, 0] or R[dim, 1] > self.Discretisation.X_bounds[dim, 1]:
+                            valid = False
+                            break
+                
+                if valid:
                     # Map continuous reachable set back to discrete cell indices
                     min_successor, max_successor = self.map_continuous_to_discrete_cells(R)
                     
-                    # Validate that min_successor <= max_successor (valid transition range)
-                    if min_successor <= max_successor:
-                        T[state_idx, control_idx] = [min_successor, max_successor]
-                    else:
-                        # Invalid reachable set (can happen at boundary conditions)
-                        print(f"Warning: Invalid reachable set at state {state_idx}, control {control_idx}: "
-                              f"min_successor ({min_successor}) > max_successor ({max_successor})")
-                        T[state_idx, control_idx] = [0, 0]  # Mark as no valid successors
+                    # Store the transition
+                    T[state_idx, control_idx] = [min_successor, max_successor]
                 else:
                     # Reachable set exceeds bounds (system left workspace)
                     T[state_idx, control_idx] = [0, 0]  # Mark as no valid successors

@@ -57,9 +57,24 @@ class ProdAutomaton:
         sys_state = curr_state[1]
         successors = self.SymbolicAbstraction.transition[sys_state, control_idx, :]
         all_transition = []
-        for next_sys_state in range(successors[0], successors[1] + 1):
-            transition = self.Transition(next_sys_state, ContextState, control_idx)
-            all_transition.extend(transition)
+        
+        # Handle wrapped intervals (for angular dimensions)
+        # If min > max, the interval wraps around (e.g., [28, 29, 0, 1, 2])
+        if successors[0] <= successors[1]:
+            # Normal case: contiguous range
+            for next_sys_state in range(successors[0], successors[1] + 1):
+                transition = self.Transition(next_sys_state, ContextState, control_idx)
+                all_transition.extend(transition)
+        else:
+            # Wrapped case: two ranges [successors[0], N_x-1] and [0, successors[1]]
+            # Range from min to end
+            for next_sys_state in range(successors[0], self.SymbolicAbstraction.Discretisation.N_x):
+                transition = self.Transition(next_sys_state, ContextState, control_idx)
+                all_transition.extend(transition)
+            # Range from start to max
+            for next_sys_state in range(0, successors[1] + 1):
+                transition = self.Transition(next_sys_state, ContextState, control_idx)
+                all_transition.extend(transition)
         
         # Cache result
         self._transition_cache[cache_key] = all_transition
