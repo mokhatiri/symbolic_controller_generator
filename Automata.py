@@ -3,6 +3,7 @@ from collections import deque
 class Automata:
     def __init__(self, TransMap = None):
         self.TransMap = TransMap
+        self.h={}
 
     def set_TransMap(self, TransMap):
         self.TransMap = TransMap
@@ -52,6 +53,7 @@ class Automata:
                     ])
 
     def ApplyReachability(self, target_states):
+        self.h = {}
         R = set(target_states)
         while True:
             R_new = R.union(self.predecessor(R))
@@ -59,41 +61,35 @@ class Automata:
                 break
             R = R_new
 
-        PrunedTmap = {}
+        return R
 
-        for state in R:
-            Statemap = {}
-            for u, next_states in self.TransMap[state].items():
-                if all(ns in R for ns in next_states):
-                    Statemap[u] = next_states
-            if Statemap:  # Only include states that have at least one valid control
-                PrunedTmap[state] = Statemap
-
-        self.TransMap = PrunedTmap
-
-
-    def ApplySecurity(self, wrong_states):
+    def ApplySecurity(self, correct_states):
         """
         TransMap : dict[state][alphabet] = liste de successeurs
-        wrong_states : ensemble d'états interdits
+        correct_states : ensemble d'états interdits
 
         Retourne :
         - PrunedTmap : TransMap restreinte au domaine sûr R*
         """
-
-        wrong_states = set(wrong_states)
-
-        all_states = set(self.TransMap.keys())
-        for control_dict in self.TransMap.values():
-            for next_states in control_dict.values():
-                all_states.update(next_states)
-
-        Qs = all_states - wrong_states
+        Qs = correct_states
 
         R = Qs.copy()
+        print("R: ", R)
+        count = 0
+        count1 = 0
         while True:
-            pre = self.predecessor(R)      # Pre(R_k)
-            R_new = Qs.intersection(pre)        # Qs ∩ Pre(R_k)
+            pred = set()
+            for state, control_dict in self.TransMap.items():
+                for u, next_states in control_dict.items():
+                    # Check if "all" next_states are in R
+                    if all(ns in R for ns in next_states) and next_states:
+                        pred.add(state)
+                        count1 += 1
+                    else:
+                        count += 1
+
+            R_new = Qs.intersection(pred)       # Qs ∩ Pre(R_k) # leave only the states within the bounds
+            print(R_new, count, count1)
             if R_new == R:                      # point fixe atteint
                 break
             R = R_new
@@ -106,13 +102,15 @@ class Automata:
                 continue  # état sans commande définie dans TransMap
             state_map = {}
             for u, next_states in self.TransMap[state].items():
-                # On ne garde que les commandes dont tous les successeurs restent dans R*
                 if all(ns in R for ns in next_states):
                     state_map[u] = next_states
             if state_map:
                 PrunedTmap[state] = state_map
 
         self.TransMap = PrunedTmap
+
+        print(R)
+        return R
 
     from collections import deque
 
@@ -150,9 +148,9 @@ class Automata:
             for u, next_states in self.TransMap[x].items():
                 prod_succs = []
                 for x_next in next_states:
-                    if x_next not in LabelMap:
+                    if (x_next[0],x_next[1]) not in LabelMap:
                         continue
-                    label = LabelMap[x_next]
+                    label = LabelMap[(x_next[0],x_next[1])]
                     if q not in SpecMap or label not in SpecMap[q]:
                         continue
                     q_next = SpecMap[q][label]
@@ -180,43 +178,56 @@ class Automata:
         for state, control_dict in self.TransMap.items():
             for u, next_states in control_dict.items():
                 # Check if "all" next_states are in R
-                if all(ns in R for ns in next_states):
+                if all(ns in R for ns in next_states) and next_states:
                     pred.add(state)
+                    if not state in self.h:
+                        print("Setting h[{}] = {}".format(state, u))
+                        self.h[state] = u # select the first
         return pred
+    
+    def getH(self):
+        return self.h
 
     def bfs_trajectory(self, startStates, goalStates):
         """
-        BFS to find a trajectory from startStates to any of the goalStates.
+        BFS to find a trajectory from startStates to any of the goalStates,
+        using only controls from the controller h.
 
         TransMap : dict[x][u] -> list[x_next]
         startStates : list of starting states ((i,j,k),'state')
         goalStates : set of goal states
 
         Returns :
-            path : list of x pairs leading from start to goal, or None if no path
+            path : list of states leading from start to goal, or None if no path
         """
         queue = deque()
         visited = set()
 
         # Initialize BFS with start states
         for s in startStates:
-            queue.append((s, []))  # (current_state, path_so_far)
+            queue.append((s, [s]))  # (current_state, path_including_current)
             visited.add(s)
-            
 
         while queue:
             state, path = queue.popleft()
 
             if state in goalStates:
-                return path+[state]  # reached a goal
+                return path  # reached a goal
 
-            if state not in self.TransMap:
+            # Only use controls from the controller h
+            if state not in self.h:
                 continue
-
-            for u, next_states in self.TransMap[state].items():
-                for next_state in next_states:
+            
+            # h[state] can be a single control or a list of controls
+            controls = self.h[state] if isinstance(self.h[state], list) else [self.h[state]]
+            
+            for u in controls:
+                if state not in self.TransMap or u not in self.TransMap[state]:
+                    continue
+                    
+                for next_state in self.TransMap[state][u]:
                     if next_state not in visited:
                         visited.add(next_state)
-                        queue.append((next_state, path + [state]))
+                        queue.append((next_state, path + [next_state]))
 
         return None

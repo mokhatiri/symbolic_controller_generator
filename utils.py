@@ -35,10 +35,6 @@ def SpaceBound(x_min, x_max, space, intersect = False):
             if not coords_min.is_integer():
                 idx_min += 1
 
-        # clamp to valid range [0, Nx[i] - 1]
-        idx_max = max(0, min(Nx[i] - 1, idx_max))
-        idx_min = max(0, min(Nx[i] - 1, idx_min))
-
         S_max.append(idx_max)
         S_min.append(idx_min)
 
@@ -122,7 +118,7 @@ def Attein(x_min, x_max, u, inputs, TransFunct, Dx_, Dw_, Sx_, Sw_, Xx_, Wx_):
     """
     x_max, x_min : listes/tuples de taille 3
     u           : tuple/liste (u1, u2)
-    inputs      : (w1, w2, w3, tau)
+    inputs      : ((w1, w2, w3), tau)
     TransFunct  : fonction de transition
     Dx, Dw      : matrices numpy
     Sx, Sw      : numpy listes/tuples de taille 3
@@ -130,14 +126,14 @@ def Attein(x_min, x_max, u, inputs, TransFunct, Dx_, Dw_, Sx_, Sw_, Xx_, Wx_):
     retourne (x_max_next, x_min_next)
     """
 
-    Dx = Dx_(u, inputs)
-    Dw = Dw_(inputs)
-    Sx = Sx_(x_min, x_max, inputs)
-    Sw = Sw_(inputs)
-    Xx = Xx_(x_min, x_max, inputs)
-    Wx = Wx_(inputs)
+    Dx = Dx_(u, inputs[1])
+    Dw = Dw_(inputs[1])
+    Sx = Sx_(x_min, x_max)
+    Sw = Sw_(inputs[0])
+    Xx = Xx_(x_min, x_max)
+    Wx = Wx_()
 
-    valF = np.array(TransFunct(Xx, u, (Wx[0], Wx[1], Wx[2], inputs[3])), dtype=float)
+    valF = np.array(TransFunct(Xx, u, Wx, inputs[1]), dtype=float)
     delta = Dx @ Sx + Dw @ Sw
 
     x_min_next = valF - delta
@@ -146,20 +142,7 @@ def Attein(x_min, x_max, u, inputs, TransFunct, Dx_, Dw_, Sx_, Sw_, Xx_, Wx_):
     return tuple(x_min_next), tuple(x_max_next)
 
 def continuous_to_cell(pt, space):
-    # pt = (x1, x2, x3_cont)
-    x1_max, x2_max, x3_range, NX1, NX2, NX3 = space
-    dx1 = x1_max / NX1
-    dx2 = x2_max / NX2
-    # x3 is in range [x3_range[0], x3_range[1]] scaled to NX3 cells
-    x3_min = x3_range[0]
-    x3_max = x3_range[1]
-    dx3 = (x3_max - x3_min) / NX3
-
-    i = int(min(NX1-1, max(0, math.floor(pt[0] / dx1))))
-    j = int(min(NX2-1, max(0, math.floor(pt[1] / dx2))))
-    k = int(min(NX3-1, max(0, math.floor((pt[2] - x3_min) / dx3))))
-    return (i, j, k)
-
+    return SpaceD(pt,pt,space,True)[0] if SpaceD(pt,pt,space,True) else None
 
 def cell_center(state, space):
     """
@@ -179,9 +162,9 @@ def cell_center(state, space):
     dx3 = (x3_range[1] - x3_range[0]) / NX3
 
     # compute center
-    x1_center = (i + 0.5) * dx1
-    x2_center = (j + 0.5) * dx2
-    x3_center = x3_range[0] + (k + 0.5) * dx3
+    x1_center = (i) * dx1
+    x2_center = (j) * dx2
+    x3_center = x3_range[0] + (k) * dx3
 
     return (x1_center, x2_center, x3_center)
 
@@ -218,7 +201,7 @@ def build_LabelMap(space, x0_min, x0_max, Rs, default = 0):
                 assigned = label
                 break
 
-        label_map[state] = assigned
+        label_map[(state[0],state[1])] = assigned
         if(assigned == default):
             default_states.append(state)
 
