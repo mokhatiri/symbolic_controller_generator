@@ -82,22 +82,25 @@ class ControllerSynthesis:
         return trash_states
 
 
-    def _get_target_states(self, safe_domain):
+    def _get_target_states(self, product_states):
         """
-        Get the set of target product states (system_state, spec_state) that are in accepting states.
+        Get target states (product states with accepting specification).
+        
+        In the product automaton, target states are those where the specification
+        component is in a final/accepting state.
         
         Args:
-            safe_domain: Set of safe product states (sys_state, spec_state)
+            product_states: Set of reachable product states (sys_state, spec_state)
             
         Returns:
-            Set of (sys_state, spec_state_name) tuples that are target states
+            Set of target product states
         """
         spec_automaton = self.Automaton.SpecificationAutomaton
         final_states = set(spec_automaton.final_states)
         
-        # Target states are those in safe_domain that have an accepting specification state
+        # Target states are product states with accepting specification state
         target_states = set()
-        for (sys_state, spec_state) in safe_domain:
+        for (sys_state, spec_state) in product_states:
             if spec_state in final_states:
                 target_states.add((sys_state, spec_state))
         
@@ -172,68 +175,6 @@ class ControllerSynthesis:
                 return False
         
         return True
-
-
-    def ApplySecurity(self, domain, trash_states):
-        """
-        Apply security fixed-point to find the maximal safe domain.
-        
-        This follows the original pattern:
-        1. First find system states that can stay within bounds
-        2. Then build product states excluding trash specification states
-        
-        Args:
-            domain: Set of initial system states
-            trash_states: Set of trash specification state names
-            
-        Returns:
-            Set of safe product states (sys_state, spec_state)
-        """
-        # Step 1: Apply security on SYSTEM states only (like original ApplySecurity)
-        # Find states where there exists a control keeping all successors in domain
-        R_sys = domain.copy()
-        
-        print(f"    ApplySecurity Phase 1 (system states): Initial size: {len(R_sys)}")
-        
-        iteration = 0
-        while True:
-            iteration += 1
-            R_sys_new = set()
-            
-            for sys_state in R_sys:
-                # Check if there exists a control keeping all successors in R_sys
-                has_safe_control = False
-                for control_idx in range(self.N_u):
-                    if self._all_sys_successors_in_domain(sys_state, control_idx, R_sys):
-                        has_safe_control = True
-                        break
-                
-                if has_safe_control:
-                    R_sys_new.add(sys_state)
-            
-            if R_sys_new == R_sys:
-                break
-            
-            R_sys = R_sys_new
-            
-            if iteration % 10 == 0:
-                print(f"    ApplySecurity Phase 1 iteration {iteration}: {len(R_sys)} states")
-        
-        print(f"    ApplySecurity Phase 1 converged after {iteration} iterations: {len(R_sys)} safe system states")
-        
-        # Step 2: Build product states from safe system states, excluding trash specs
-        spec_automaton = self.Automaton.SpecificationAutomaton
-        non_trash_specs = [s for s in spec_automaton.state_list if s not in trash_states]
-        
-        R = set()
-        for sys_state in R_sys:
-            for spec_state in non_trash_specs:
-                R.add((sys_state, spec_state))
-        
-        print(f"    ApplySecurity Phase 2 (product states): {len(R)} states")
-        
-        print(f"    ApplySecurity converged after {iteration} iterations")
-        return R
 
 
     def ApplyReachability(self, target_states, safe_domain, max_iter=10000):
@@ -370,7 +311,11 @@ class ControllerSynthesis:
 
     def Start(self, is_reachability=True, max_iter=10000):
         """
-        Start controller synthesis: ApplySecurity first, then ApplyReachability.
+        Start controller synthesis following the original pattern:
+        1. ApplySecurity on system states (keep states within bounds)
+        2. Build reachable product automaton from initial spec state
+        3. Apply safety to remove product states leading to trash
+        4. ApplyReachability from accepting states
         """
         # Check for cached results
         try:
@@ -391,21 +336,27 @@ class ControllerSynthesis:
                 if self._get_successors_range(sys_state, control_idx) is not None:
                     domain.add(sys_state)
                     break
-        print(f"  Initial domain: {len(domain)} states")
+        print(f"  Step 1 - Initial domain: {len(domain)} system states with valid transitions")
         
-        # Step 2: Apply Security - remove states that can escape to trash
+        # Step 2: Apply Security on SYSTEM states - find states that stay within bounds
+        safe_sys_states = self._apply_security_system(domain)
+        print(f"  Step 2 - After ApplySecurity (system): {len(safe_sys_states)} safe system states")
+        
+        # Step 3: Build the reachable product automaton from initial spec state
+        # This is like ToProdAutomate in original
         trash_states = self._get_trash_spec_states()
         print(f"  Trash specification states: {trash_states}")
         
-        safe_domain = self.ApplySecurity(domain, trash_states)
-        print(f"  After ApplySecurity: {len(safe_domain)} safe states")
+        product_states = self._build_product_automaton(safe_sys_states, trash_states)
+        print(f"  Step 3 - Product automaton: {len(product_states)} reachable product states")
         
-        # Step 3: Apply Reachability from target states
-        target_states = self._get_target_states(safe_domain)
-        print(f"  Target states (accepting): {len(target_states)}")
+        # Step 4: Define target states (product states with accepting spec)
+        target_states = self._get_target_states(product_states)
+        print(f"  Step 4 - Target states (accepting): {len(target_states)}")
         
-        R = self.ApplyReachability(target_states, safe_domain, max_iter)
-        print(f"  After ApplyReachability: {len(R)} reachable states")
+        # Step 5: Apply Reachability from target states
+        R = self.ApplyReachability(target_states, product_states, max_iter)
+        print(f"  Step 5 - After ApplyReachability: {len(R)} winning states")
         
         elapsed = time.time() - start_time
         print(f"  Controller synthesis completed in {elapsed:.2f}s")
@@ -418,6 +369,94 @@ class ControllerSynthesis:
         print("✓ Computed and saved new controller results to file.")
         
         return self.V, self.h_array
+
+
+    def _apply_security_system(self, domain):
+        """
+        Apply security fixed-point on system states only.
+        Finds the maximal set of states that can stay within bounds.
+        """
+        R = domain.copy()
+        
+        iteration = 0
+        while True:
+            iteration += 1
+            R_new = set()
+            
+            for sys_state in R:
+                # Check if there exists a control keeping all successors in R
+                has_safe_control = False
+                for control_idx in range(self.N_u):
+                    if self._all_sys_successors_in_domain(sys_state, control_idx, R):
+                        has_safe_control = True
+                        break
+                
+                if has_safe_control:
+                    R_new.add(sys_state)
+            
+            if R_new == R:
+                break
+            
+            R = R_new
+            
+            if iteration % 10 == 0:
+                print(f"    ApplySecurity iteration {iteration}: {len(R)} states")
+        
+        print(f"    ApplySecurity converged after {iteration} iterations")
+        return R
+
+
+    def _build_product_automaton(self, safe_sys_states, trash_states):
+        """
+        Build the reachable product automaton via BFS from initial spec state.
+        This mimics ToProdAutomate from the original implementation.
+        
+        Only includes product states (sys_state, spec_state) that are:
+        1. Reachable from any system state with initial spec state
+        2. Not in trash specification states
+        """
+        from collections import deque
+        
+        spec_automaton = self.Automaton.SpecificationAutomaton
+        initial_spec = spec_automaton.initial_state
+        
+        # Build product automaton via BFS
+        visited = set()
+        queue = deque()
+        
+        # Initialize with all safe system states at initial spec state
+        for sys_state in safe_sys_states:
+            prod_state = (sys_state, initial_spec)
+            if initial_spec not in trash_states:
+                queue.append(prod_state)
+                visited.add(prod_state)
+        
+        while queue:
+            (sys_state, spec_state) = queue.popleft()
+            
+            # For each control, explore transitions
+            for control_idx in range(self.N_u):
+                succ_range = self._get_successors_range(sys_state, control_idx)
+                if succ_range is None:
+                    continue
+                
+                min_succ, max_succ = succ_range
+                
+                for next_sys in range(min_succ, max_succ + 1):
+                    if next_sys not in safe_sys_states:
+                        continue
+                    
+                    # Get labels and compute next spec state
+                    labels = self.Automaton.Labeling[next_sys]
+                    for label in labels:
+                        next_spec = spec_automaton.get_next_state(spec_state, label)
+                        if next_spec is not None and next_spec not in trash_states:
+                            next_prod = (next_sys, next_spec)
+                            if next_prod not in visited:
+                                visited.add(next_prod)
+                                queue.append(next_prod)
+        
+        return visited
 
 
     def Save(self):
