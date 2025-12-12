@@ -4,6 +4,7 @@ class ProdAutomaton:
         self.Labeling = Labeling
         self.SymbolicAbstraction = SymbolicAbstraction
         self.model_dir = model_dir
+        self.total_controls = self.SymbolicAbstraction.Discretisation.N_u
         self.total_sys_states = self.SymbolicAbstraction.transition.shape[0]
         self.total_spec_states = self.SpecificationAutomaton.total_states
         self.total_states = self.total_sys_states * self.total_spec_states
@@ -56,6 +57,10 @@ class ProdAutomaton:
         
         return all_transition
     
+    def prev_next(self, prev_SpecState, curr_sys_state):
+
+        return self.SpecificationAutomaton.transition.get((prev_SpecState, self.Labeling[curr_sys_state]), [])
+
     def possible_transition(self, curr_state, ContextState):
         # check all controls
         all_transition = []
