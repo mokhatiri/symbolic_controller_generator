@@ -184,7 +184,8 @@ class AbstractSpace:
             fname: Name of the CSV file to save to (stored in model_dir)
         """
         # Create model directory if it doesn't exist
-        os.makedirs(self.model_dir, exist_ok=True)
+        save_dir = os.path.normpath(self.model_dir)
+        os.makedirs(save_dir, exist_ok=True)
         
         rows = []
         
@@ -198,7 +199,8 @@ class AbstractSpace:
                 rows.append([state_idx, control_idx, min_succ, max_succ])
         
         df = pd.DataFrame(rows, columns=['State Index', 'Input Index', 'Min Successor', 'Max Successor'])
-        df.to_csv(os.path.join(self.model_dir, fname), index=False)
+        save_path = os.path.normpath(os.path.join(save_dir, fname))
+        df.to_csv(save_path, index=False)
 
     def load_symbolic_model(self, fname="symbolic_model.csv"):
         """
@@ -210,7 +212,7 @@ class AbstractSpace:
         Raises:
             FileNotFoundError: If the model file doesn't exist
         """
-        model_path = os.path.join(self.model_dir, fname)
+        model_path = os.path.normpath(os.path.join(self.model_dir, fname))
         if not os.path.exists(model_path):
             raise FileNotFoundError(f"Symbolic model file not found: {model_path}")
         

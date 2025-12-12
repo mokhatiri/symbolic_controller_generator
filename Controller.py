@@ -39,18 +39,14 @@ class ControllerSynthesis:
         Get the range of successor states for a given system state and control.
         
         Returns:
-            Tuple (min_succ, max_succ) or None if transition is invalid (both are 0)
+            Tuple (min_succ, max_succ) or None if transition is invalid
         """
         transition = self.Automaton.SymbolicAbstraction.transition
-        min_succ = transition[sys_state, control_idx, 0]
-        max_succ = transition[sys_state, control_idx, 1]
+        min_succ = int(transition[sys_state, control_idx, 0])
+        max_succ = int(transition[sys_state, control_idx, 1])
         
-        # Check for invalid transition (both 0 typically means no valid transition)
-        if min_succ == 0 and max_succ == 0:
-            # Only valid if state 0 is actually reachable - check if min <= max
-            # A valid transition has min_succ <= max_succ
-            return None
-        
+        # A valid transition has min_succ <= max_succ
+        # Invalid transitions are indicated by min > max (e.g., both 0 could be valid for state 0)
         if min_succ <= max_succ:
             return (min_succ, max_succ)
         return None
@@ -150,11 +146,41 @@ class ControllerSynthesis:
         return True
 
 
+    def _all_sys_successors_in_domain(self, sys_state, control_idx, domain):
+        """
+        Check if ALL system successors under control_idx stay within domain.
+        
+        This is used for the initial security check before product automaton.
+        
+        Args:
+            sys_state: Current system state index
+            control_idx: Control input index
+            domain: Set of valid system states
+            
+        Returns:
+            True if all successors are in domain, False otherwise
+        """
+        succ_range = self._get_successors_range(sys_state, control_idx)
+        if succ_range is None:
+            return False
+        
+        min_succ, max_succ = succ_range
+        
+        # Check all successors are within domain
+        for next_sys in range(min_succ, max_succ + 1):
+            if next_sys not in domain:
+                return False
+        
+        return True
+
+
     def ApplySecurity(self, domain, trash_states):
         """
         Apply security fixed-point to find the maximal safe domain.
         
-        Removes states that can reach trash states under all controls.
+        This follows the original pattern:
+        1. First find system states that can stay within bounds
+        2. Then build product states excluding trash specification states
         
         Args:
             domain: Set of initial system states
@@ -163,40 +189,48 @@ class ControllerSynthesis:
         Returns:
             Set of safe product states (sys_state, spec_state)
         """
-        spec_automaton = self.Automaton.SpecificationAutomaton
-        non_trash_specs = [s for s in spec_automaton.state_list if s not in trash_states]
+        # Step 1: Apply security on SYSTEM states only (like original ApplySecurity)
+        # Find states where there exists a control keeping all successors in domain
+        R_sys = domain.copy()
         
-        # Initialize with all product states not involving trash specs
-        R = set()
-        for sys_state in domain:
-            for spec_state in non_trash_specs:
-                R.add((sys_state, spec_state))
-        
-        print(f"    ApplySecurity: Initial set size: {len(R)}")
+        print(f"    ApplySecurity Phase 1 (system states): Initial size: {len(R_sys)}")
         
         iteration = 0
         while True:
             iteration += 1
-            R_new = set()
+            R_sys_new = set()
             
-            for (sys_state, spec_state) in R:
-                # Check if there exists a control keeping all successors in R
+            for sys_state in R_sys:
+                # Check if there exists a control keeping all successors in R_sys
                 has_safe_control = False
                 for control_idx in range(self.N_u):
-                    if self._all_successors_in_set(sys_state, control_idx, R, spec_state):
+                    if self._all_sys_successors_in_domain(sys_state, control_idx, R_sys):
                         has_safe_control = True
                         break
                 
                 if has_safe_control:
-                    R_new.add((sys_state, spec_state))
+                    R_sys_new.add(sys_state)
             
-            if R_new == R:
+            if R_sys_new == R_sys:
                 break
             
-            R = R_new
+            R_sys = R_sys_new
             
             if iteration % 10 == 0:
-                print(f"    ApplySecurity iteration {iteration}: {len(R)} states")
+                print(f"    ApplySecurity Phase 1 iteration {iteration}: {len(R_sys)} states")
+        
+        print(f"    ApplySecurity Phase 1 converged after {iteration} iterations: {len(R_sys)} safe system states")
+        
+        # Step 2: Build product states from safe system states, excluding trash specs
+        spec_automaton = self.Automaton.SpecificationAutomaton
+        non_trash_specs = [s for s in spec_automaton.state_list if s not in trash_states]
+        
+        R = set()
+        for sys_state in R_sys:
+            for spec_state in non_trash_specs:
+                R.add((sys_state, spec_state))
+        
+        print(f"    ApplySecurity Phase 2 (product states): {len(R)} states")
         
         print(f"    ApplySecurity converged after {iteration} iterations")
         return R

@@ -30,8 +30,8 @@ class SymbolicController:
         state_indices = list(range(self.Discretisation.N_x))
         labeling_file = f"{self.model_dir}/labeling_dict.csv"
         labeling = Labeling.Labeling(state_indices, actual_relation, sets, fname=labeling_file)
-        abstraction = AbstractSpace.AbstractSpace(self.System, self.Discretisation)
-        automaton = ProdAutomaton.ProdAutomaton(SpecificationAutomaton, labeling, abstraction)
+        abstraction = AbstractSpace.AbstractSpace(self.System, self.Discretisation, model_dir=model_dir)
+        automaton = ProdAutomaton.ProdAutomaton(SpecificationAutomaton, labeling, abstraction, model_dir=model_dir)
 
         self.Controller = Controller.ControllerSynthesis(automaton, model_dir=model_dir)
         self.V = None

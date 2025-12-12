@@ -47,7 +47,8 @@ class Labeling():
         Args:
             fname: Name of the CSV file to save to
         """
-        # Ensure the directory exists
+        # Normalize path and ensure the directory exists
+        fname = os.path.normpath(fname)
         os.makedirs(os.path.dirname(fname), exist_ok=True)
         
         with open(fname, mode='w', newline='') as file:
@@ -63,6 +64,7 @@ class Labeling():
         Args:
             fname: Name of the CSV file to load from
         """
+        fname = os.path.normpath(fname)
         labeling_dict = {}
         with open(fname, mode='r') as file:
             reader = csv.reader(file)
